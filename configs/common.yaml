@@ -1,0 +1,30 @@
+seed: 42
+
+APPROACH: "word_level"
+
+# ── Models ────────────────────────────────────────────────────────────────────
+SMALL_MODEL_ID   : "Qwen/Qwen2.5-1.5B-Instruct"
+LARGE_MODEL_ID   : "Qwen/Qwen2.5-3B-Instruct"
+
+# ── Dataset ────────────────────────────────────────────────────────────────────
+DATASET_ID: "HuggingFaceTB/smoltalk"
+DATASET_SUBSETS  :
+  - "self-oss-instruct"
+  - "metamathqa-50k"
+  - "numina-cot-100k"
+  - "openhermes-100k"
+  - "smol-magpie-ultra"
+MAX_TRAIN_SAMPLES: 10000
+MAX_VAL_SAMPLES: 5000
+MAX_LENGTH: 2048
+
+# ── Training ───────────────────────────────────────────────────────────────────
+TRAIN_EPOCHS: 1
+PER_DEVICE_TRAIN_BATCH_SIZE : 1
+PER_DEVICE_EVAL_BATCH_SIZE  : 1
+GRADIENT_ACCUMULATION_STEPS : 32
+LR: 3.0e-4
+
+
+# MISC
+WORK_DIR_ROOT: ~/scratch/distillation
