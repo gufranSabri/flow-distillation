@@ -80,11 +80,74 @@ class SmolTalkProcessor(DataProcessor):
         return examples
 
 
-def prepare_tokenizer(tokenizer, logger=None):
+class DollyProcessor(DataProcessor):
+    """Alpaca-template, single-turn instruction/response pairs — MiniLLM's Dolly
+    recipe (docs/repos/minillm/tools/process_data_dolly.py::Encoder.encode), copied
+    exactly for the prompt template and tokenization. Unlike SmolTalkProcessor, this
+    never calls apply_chat_template — a deliberate exact replication of MiniLLM's own
+    training data, despite Qwen being chat-tuned."""
+
+    def line2data(self, indexed_example: tuple) -> list:
+        _, ex = indexed_example
+        prompt = format_dolly_prompt(ex["instruction"], ex["context"])
+
+        prompt_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+        if len(prompt_ids) > DOLLY_MAX_PROMPT_LEN:
+            return []
+
+        full_ids = self.tokenizer.encode(prompt + ex["response"], add_special_tokens=False)
+        response_ids = full_ids[len(prompt_ids):]
+
+        if len(prompt_ids) + len(response_ids) + 1 > self.config.MAX_LENGTH:
+            return []
+
+        # Same pre-shifted-labels convention as SmolTalkProcessor.line2data:
+        # labels[t] == input_ids[t+1], with a trailing eos as the final target.
+        input_ids = prompt_ids + response_ids
+        labels    = [-100] * len(prompt_ids[1:]) + response_ids + [self.tokenizer.eos_token_id]
+
+        return [{"input_ids": input_ids, "labels": labels}]
+
+
+DOLLY_DATASET_ID      = "databricks/databricks-dolly-15k"
+DOLLY_DEV_NUM_DEFAULT = 1000   # MiniLLM: first N raw rows -> valid, rest -> train
+DOLLY_MAX_PROMPT_LEN  = 256    # MiniLLM tools/process_data_dolly.py --max-prompt-length
+
+_DOLLY_TEMPLATE_NO_INPUT = (
+    "Below is an instruction that describes a task. "
+    "Write a response that appropriately completes the request.\n\n"
+    "### Instruction:\n{instruction}\n\n### Response:\n"
+)
+_DOLLY_TEMPLATE_WITH_INPUT = (
+    "Below is an instruction that describes a task, paired with an input that provides further context. "
+    "Write a response that appropriately completes the request.\n\n"
+    "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:\n"
+)
+
+
+def format_dolly_prompt(instruction: str, input_text: str) -> str:
+    """MiniLLM's generic (non-qwen2) Alpaca template — shared by DollyProcessor and
+    dolly_eval so training and eval prompts never drift apart. Deliberately no chat
+    template, matching MiniLLM's own base-model recipe exactly."""
+    if not input_text:
+        return _DOLLY_TEMPLATE_NO_INPUT.format(instruction=instruction)
+    return _DOLLY_TEMPLATE_WITH_INPUT.format(instruction=instruction, input=input_text)
+
+
+def load_dolly_splits(dataset_id=DOLLY_DATASET_ID, dev_num=DOLLY_DEV_NUM_DEFAULT):
+    """Replicates tools/process_data_dolly.py's split on the dataset's natural
+    (unshuffled) row order: first `dev_num` rows -> valid, rest -> train. Verified
+    against MiniLLM's own valid.jsonl: row 0 matches exactly."""
+    full = load_dataset(dataset_id, split="train")
+    return full.select(range(dev_num, len(full))), full.select(range(dev_num))
+
+
+def prepare_tokenizer(tokenizer, logger=None, require_chat_template=True):
     """Validate/complete the special tokens needed downstream, regardless of
     which model the tokenizer belongs to.
 
-    - A chat template is required by SmolTalkProcessor.line2data (apply_chat_template).
+    - A chat template is required by SmolTalkProcessor.line2data (apply_chat_template),
+      but not by DollyProcessor (require_chat_template=False), which never calls it.
     - eos_token_id is required to terminate labels (see line2data); some base
       tokenizers leave it unset.
     - pad_token is required by DataCollatorForSeq2Seq at collation time; several
@@ -92,7 +155,7 @@ def prepare_tokenizer(tokenizer, logger=None):
     """
     log = logger or (lambda msg: None)
 
-    if tokenizer.chat_template is None:
+    if require_chat_template and tokenizer.chat_template is None:
         raise ValueError(
             f"Tokenizer {tokenizer.name_or_path!r} has no chat_template. "
             "SmolTalkProcessor requires an instruction-tuned tokenizer/model."
@@ -191,6 +254,53 @@ def build_datasets(args, tokenizer):
     return train_tokenized, val_tokenized, data_collator
 
 
+def build_dolly_datasets(args, tokenizer):
+    args.logger("Building Dolly datasets...")
+
+    tokenizer = prepare_tokenizer(tokenizer, logger=args.logger, require_chat_template=False)
+
+    train_raw, val_raw = load_dolly_splits(
+        dataset_id=getattr(args, "DATASET_ID", DOLLY_DATASET_ID),
+        dev_num=getattr(args, "DOLLY_DEV_NUM", DOLLY_DEV_NUM_DEFAULT),
+    )
+    processor = DollyProcessor(config=args, tokenizer=tokenizer, filepath=args.DATASET_ID)
+    processor.initializer()
+
+    def process(raw_dataset, label):
+        out = []
+        for item in tqdm(
+            enumerate(raw_dataset),
+            desc=f"Tokenizing Dolly {label}",
+            total=len(raw_dataset),
+        ):
+            out.extend(processor.line2data(item))
+        return out
+
+    train_data = process(train_raw, "train")
+    val_data   = process(val_raw, "val")
+
+    if args.MAX_TRAIN_SAMPLES != -1:
+        random.shuffle(train_data)
+        train_data = train_data[:args.MAX_TRAIN_SAMPLES]
+    if args.MAX_VAL_SAMPLES != -1:
+        random.shuffle(val_data)
+        val_data = val_data[:args.MAX_VAL_SAMPLES]
+
+    args.logger(f"  Total after length filter (≤{args.MAX_LENGTH} tokens): "
+                f"{len(train_data)} train / {len(val_data)} val\n")
+
+    train_tokenized = Dataset.from_list(train_data)
+    val_tokenized   = Dataset.from_list(val_data)
+
+    data_collator = DataCollatorForSeq2Seq(
+        tokenizer,
+        model=None,
+        padding=True,
+        pad_to_multiple_of=8,
+        label_pad_token_id=-100,
+    )
+
+    return train_tokenized, val_tokenized, data_collator
 
 
 def load_config(path):

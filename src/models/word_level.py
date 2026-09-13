@@ -4,20 +4,21 @@ import torch
 from transformers import AutoModelForCausalLM
 
 
-def load_student(args, teacher=None):
-    """Loads the student. LoRA is merged back into the base weights before saving,
-    so checkpoints always reload as a plain AutoModelForCausalLM."""
-    student = AutoModelForCausalLM.from_pretrained(
-        args.SMALL_MODEL_ID,
+def load_model(args, model_id):
+    """Loads model_id for training. LoRA is merged back into the base weights before
+    saving, so checkpoints always reload as a plain AutoModelForCausalLM. Shared by
+    distill.py (student) and pretraining.py (whichever single model it's SFT-ing)."""
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
         dtype=torch.bfloat16,
         trust_remote_code=True,
     )
-    student.config.use_cache = False
+    model.config.use_cache = False
 
     if args.FINETUNE_MODE == "lora":
         from peft import LoraConfig, get_peft_model
 
-        student = get_peft_model(student, LoraConfig(
+        model = get_peft_model(model, LoraConfig(
             r=args.LORA_R,
             lora_alpha=args.LORA_ALPHA,
             lora_dropout=args.LORA_DROPOUT,
@@ -27,19 +28,19 @@ def load_student(args, teacher=None):
     elif args.FINETUNE_MODE != "full":
         raise ValueError(f"FINETUNE_MODE must be 'full' or 'lora', got {args.FINETUNE_MODE!r}")
 
-    return student
+    return model
 
 
-def save_student(student, tokenizer, save_dir):
+def save_model(model, tokenizer, save_dir):
     """Saves a standalone HF model that AutoModelForCausalLM.from_pretrained can load."""
-    model = student
-    if hasattr(model, "merge_and_unload"):
+    out = model
+    if hasattr(out, "merge_and_unload"):
         # merge a copy: merge_and_unload() strips the adapters, which would leave the
         # live model with nothing trainable for the rest of training
-        model = copy.deepcopy(student).merge_and_unload()
+        out = copy.deepcopy(model).merge_and_unload()
 
-    use_cache = model.config.use_cache
-    model.config.use_cache = True
-    model.save_pretrained(save_dir, safe_serialization=True)
+    use_cache = out.config.use_cache
+    out.config.use_cache = True
+    out.save_pretrained(save_dir, safe_serialization=True)
     tokenizer.save_pretrained(save_dir)
-    model.config.use_cache = use_cache
+    out.config.use_cache = use_cache

@@ -6,12 +6,6 @@ import torch
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-# LOGLIKELIHOOD_TASKS = ["mmlu", "mmlu_pro", "mathqa"]
-# GENERATIVE_TASKS = ["gsm8k", "humaneval", "mbpp"]
-
-LOGLIKELIHOOD_TASKS = ["mmlu"]
-GENERATIVE_TASKS = []
-
 
 def load_model(path, device, dtype):
     """Loads a local checkpoint or a hub id the same way. Trainer checkpoints are
@@ -27,32 +21,6 @@ def load_model(path, device, dtype):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     return model, tokenizer
-
-
-def run_tasks(lm, tasks, work_dir, label, args):
-    import lm_eval
-
-    if not tasks:
-        return {}
-
-    print(f"\n=== {label}: {', '.join(tasks)} ===", flush=True)
-    out = lm_eval.simple_evaluate(
-        model=lm,
-        tasks=tasks,
-        batch_size=args.batch_size,
-        limit=args.limit,
-        apply_chat_template=args.apply_chat_template,
-        fewshot_as_multiturn=args.apply_chat_template,
-        # humaneval/mbpp execute generated code, and are skipped without this
-        confirm_run_unsafe_code=True,
-        log_samples=False,
-    )
-    if out is None:
-        return {}
-
-    with open(os.path.join(work_dir, f"{label}.json"), "w") as f:
-        json.dump({k: v for k, v in out.items() if k != "samples"}, f, indent=2, default=str)
-    return out.get("results", {})
 
 
 def summarize(results, work_dir):
@@ -86,32 +54,15 @@ def summarize(results, work_dir):
 
 def main(args):
     os.makedirs(args.work_dir, exist_ok=True)
-
-    from lm_eval.models.huggingface import HFLM
+    from dolly_eval.generate import run_generation_eval
 
     dtype = getattr(torch, args.dtype)
     model, tokenizer = load_model(args.model, args.device, dtype)
     print(f"Loaded {args.model} ({sum(p.numel() for p in model.parameters()):,} params)")
 
-    lm = HFLM(
-        pretrained=model,
-        tokenizer=tokenizer,
-        batch_size=args.batch_size,
-        max_length=args.max_length,
-    )
-
-    results = {}
-    results.update(run_tasks(lm, args.loglikelihood_tasks, args.work_dir, "loglikelihood", args))
-    results.update(run_tasks(lm, args.generative_tasks, args.work_dir, "generative", args))
-
+    results = run_generation_eval(model, tokenizer, args)
     table = summarize(results, args.work_dir)
     print(f"\n{table}\n\nResults written to {args.work_dir}")
-
-
-def _tasks(value, default):
-    if value is None:
-        return default
-    return [t for t in value.split(",") if t] if value.lower() != "none" else []
 
 
 if __name__ == "__main__":
@@ -120,16 +71,60 @@ if __name__ == "__main__":
     parser.add_argument("--work-dir", default="./work_dir/benchmark")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", default="bfloat16")
-    parser.add_argument("--batch-size", default="auto")
-    parser.add_argument("--max-length", type=int, default=4096)
+    parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--limit", type=float, default=None, help="cap docs per task (debug)")
-    parser.add_argument("--apply-chat-template", action="store_true", default=True)
-    parser.add_argument("--no-chat-template", dest="apply_chat_template", action="store_false")
-    parser.add_argument("--loglikelihood-tasks", default=None, help="comma-separated, or 'none'")
-    parser.add_argument("--generative-tasks", default=None, help="comma-separated, or 'none'")
+
+    parser.add_argument(
+        "--tasks", default="dolly,self_inst,vicuna,s_ni,u_inst",
+        help="comma-separated subset of MiniLLM's instruction-following eval suite "
+             "(dolly, self_inst, vicuna, s_ni, u_inst)",
+    )
+
+    # Dolly-only: which HF dataset/split backs the "dolly" task (must match training's
+    # DATASET_ID/DOLLY_DEV_NUM to avoid leakage). The other four tasks source their own
+    # fixed eval sets from the MiniLLM Hub org.
+    parser.add_argument("--dolly-dataset-id", default="databricks/databricks-dolly-15k")
+    parser.add_argument("--dolly-dev-num", type=int, default=1000,
+                         help="must match training's DOLLY_DEV_NUM to avoid leakage")
+
+    # Generation hyperparameters, shared across every task (MiniLLM uses one generation
+    # config for its whole eval suite: scripts/*/eval/eval_main_*.sh).
+    parser.add_argument("--gen-max-length", type=int, default=512)
+    parser.add_argument("--gen-max-prompt-length", type=int, default=256)
+    parser.add_argument("--gen-do-sample", dest="gen_do_sample", action="store_true", default=True)
+    parser.add_argument("--gen-no-sample", dest="gen_do_sample", action="store_false")
+    parser.add_argument("--gen-top-k", type=int, default=0)
+    parser.add_argument("--gen-top-p", type=float, default=1.0)
+    parser.add_argument("--gen-temperature", type=float, default=1.0)
+    parser.add_argument("--gen-no-repeat-ngram-size", type=int, default=6)
+    parser.add_argument("--gen-repetition-penalty", type=float, default=None)
+
+    # GPT4 pairwise-judge metric (MiniLLM: model response vs. ground truth answer, 1-10
+    # scores from GPT-4, reported as a ratio of totals). Off by default -- it costs real
+    # API calls. Needs OPENAI_API_KEY (or --gpt4-eval-api-key).
+    parser.add_argument("--gpt4-eval", action="store_true", default=False,
+                         help="also score generations with a GPT-4 judge against the "
+                              "reference answer (off by default; costs API calls)")
+    parser.add_argument("--gpt4-eval-model", default="gpt-4")
+    parser.add_argument("--gpt4-eval-api-key", default=None,
+                         help="defaults to the OPENAI_API_KEY env var")
+    parser.add_argument("--gpt4-eval-tasks", default="dolly,self_inst,vicuna",
+                         help="comma-separated subset of --tasks to run the GPT4 judge on "
+                              "(MiniLLM only applies it to DollyEval, SelfInst, VicunaEval)")
+    parser.add_argument("--gpt4-eval-limit", type=float, default=None,
+                         help="cap judged samples per task, for cost control (default: judge all generated samples)")
 
     args = parser.parse_args()
-    args.loglikelihood_tasks = _tasks(args.loglikelihood_tasks, LOGLIKELIHOOD_TASKS)
-    args.generative_tasks = _tasks(args.generative_tasks, GENERATIVE_TASKS)
+    args.tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
+    args.gpt4_eval_tasks = [t.strip() for t in args.gpt4_eval_tasks.split(",") if t.strip()]
+
+    from dolly_eval.instruct_tasks import TASKS
+    unknown = [t for t in args.tasks if t not in TASKS]
+    if unknown:
+        parser.error(f"unknown task(s) {unknown}; choose from {sorted(TASKS)}")
+
+    unknown_gpt4 = [t for t in args.gpt4_eval_tasks if t not in TASKS]
+    if unknown_gpt4:
+        parser.error(f"unknown --gpt4-eval-tasks task(s) {unknown_gpt4}; choose from {sorted(TASKS)}")
 
     main(args)

@@ -2,20 +2,16 @@ seed: 42
 
 APPROACH: "word_level"
 
-# ── Models ────────────────────────────────────────────────────────────────────
-SMALL_MODEL_ID   : "Qwen/Qwen3.5-0.8B"
-LARGE_MODEL_ID   : "Qwen/Qwen3.5-9B"
+# Student/teacher model ids (or local checkpoint paths, e.g. a pretraining.py SFT
+# output) are CLI-only: distill.py --student-model / --teacher-model. No default.
 
 # ── Dataset ────────────────────────────────────────────────────────────────────
-DATASET_ID: "HuggingFaceTB/smoltalk"
-DATASET_SUBSETS  :
-  - "self-oss-instruct"
-  - "metamathqa-50k"
-  - "numina-cot-100k"
-  - "openhermes-100k"
-  - "smol-magpie-ultra"
-MAX_TRAIN_SAMPLES: 100000
-MAX_VAL_SAMPLES: 5000
+DATASET_ID: "databricks/databricks-dolly-15k"
+DOLLY_DEV_NUM: 1000   # first N raw rows held out as the fixed valid split (MiniLLM
+                       # convention); benchmark.py's --dolly-dev-num must match this
+                       # to avoid train/eval leakage
+MAX_TRAIN_SAMPLES: -1
+MAX_VAL_SAMPLES: -1
 MAX_LENGTH: 2048
 
 # ── Distillation loss ──────────────────────────────────────────────────────────

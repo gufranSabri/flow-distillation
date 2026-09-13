@@ -6,12 +6,11 @@ import shutil
 import sys
 
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import get_linear_schedule_with_warmup
 
-from src.models.word_level import save_student
+from src.models.word_level import save_model
 from utils import losses as loss_fns
 
 
@@ -47,23 +46,16 @@ def resolve_distill_loss(name, lam):
     return fn, {"lam": lam}
 
 
-def _seq_mean(per_token, mask):
-    # average within each sequence first, then across the batch, so long sequences
-    # don't dominate (phase1.md 3)
-    denom = mask.sum(-1).clamp(min=1)
-    return ((per_token * mask).sum(-1) / denom).mean()
-
-
 def kd_loss(student_logits, teacher_logits, labels, loss_fn, temperature, **kwargs):
-    """Divergence between the teacher and student next-token distributions.
+    """Divergence between the teacher and student next-token distributions -- the sole
+    training objective (labels are only used to mask out the prompt, never as a CE
+    target: distillation never sees the Dolly ground-truth response).
 
     `loss_fn` reads its own mask off no_model_batch["label"], so the raw labels
     tensor is handed over rather than the float mask the other losses take.
 
     It also reduces with a flat mean over every unmasked token it is given, so it
-    is called one sequence at a time and averaged across the batch — that keeps
-    the per-sequence aggregation of _seq_mean (phase1.md 3) and keeps the KD term
-    on the same footing as the CE term it is mixed with via KD_LAMBDA. At
+    is called one sequence at a time and averaged across the batch. At
     PER_DEVICE_TRAIN_BATCH_SIZE=1 this is a single call either way.
 
     Temperature follows the Hinton convention (soften both sides, rescale by tau^2
@@ -77,16 +69,6 @@ def kd_loss(student_logits, teacher_logits, labels, loss_fn, temperature, **kwar
         for i in range(s_logits.shape[0])
     ])
     return per_seq.mean() * (temperature ** 2)
-
-
-def ce_loss(student_logits, labels, mask):
-    # labels are pre-shifted by the data pipeline: labels[t] targets logits[t]
-    per_token = F.cross_entropy(
-        student_logits.float().flatten(0, 1),
-        labels.clamp(min=0).flatten(),
-        reduction="none",
-    ).view(labels.shape)
-    return _seq_mean(per_token, mask)
 
 
 class WordLevelTrainer:
@@ -143,15 +125,12 @@ class WordLevelTrainer:
 
         s_logits, t_logits = student_out.logits, teacher_out.logits
         parts = {
-            "ce": ce_loss(s_logits, labels, loss_mask),
             "kd": kd_loss(
                 s_logits, t_logits, labels, self.distill_loss,
                 self.args.TEMPERATURE, **self.loss_kwargs,
             ),
         }
-
-        lam = self.args.KD_LAMBDA
-        loss = lam * parts["kd"] + (1 - lam) * parts["ce"]
+        loss = parts["kd"]
 
         # fraction of positions where student and teacher pick the same top-1 token
         agree = (((s_logits.argmax(-1) == t_logits.argmax(-1)).float() * loss_mask).sum()
@@ -210,7 +189,7 @@ class WordLevelTrainer:
         pbar.close()
         self.evaluate()
         final_dir = os.path.join(args.work_dir, f"{args.APPROACH}_final")
-        save_student(self.student, self.tokenizer, final_dir)
+        save_model(self.student, self.tokenizer, final_dir)
         self.log(f"Saved final model to {final_dir}")
 
     @torch.no_grad()
@@ -240,7 +219,7 @@ class WordLevelTrainer:
 
     def save_checkpoint(self):
         ckpt_dir = os.path.join(self.args.work_dir, f"checkpoint-{self.step}")
-        save_student(self.student, self.tokenizer, ckpt_dir)
+        save_model(self.student, self.tokenizer, ckpt_dir)
         torch.save(
             {"step": self.step,
              "optimizer": self.optimizer.state_dict(),

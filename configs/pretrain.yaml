@@ -1,0 +1,20 @@
+APPROACH: "pretrain"
+
+# ── Model ──────────────────────────────────────────────────────────────────────
+FINETUNE_MODE: "full"   # full | lora
+
+LORA_R: 16
+LORA_ALPHA: 32
+LORA_DROPOUT: 0.05
+LORA_TARGET_MODULES: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+# ── Training ───────────────────────────────────────────────────────────────────
+LR: 1.0e-4
+WARMUP_RATIO: 0.03
+WEIGHT_DECAY: 0.0
+MAX_GRAD_NORM: 1.0
+
+LOG_EVERY: 10
+EVAL_EVERY: 200
+SAVE_EVERY: 200
+SAVE_TOTAL_LIMIT: 3

@@ -13,8 +13,7 @@
 #SBATCH --time=1-00:00:00
 
 # SUBMIT THIS FROM THE REPO ROOT:
-#   sbatch benchmark.slurm Qwen/Qwen2.5-1.5B-Instruct
-#   sbatch benchmark.slurm ~/scratch/distillation/<run>/word_level_final [extra flags]
+#   sbatch benchmark.slurm
 set -euo pipefail
 mkdir -p slurm work_dir
 
@@ -28,15 +27,17 @@ export PYTHONDONTWRITEBYTECODE=1
 export HF_HUB_DISABLE_XET=1
 export TF_CPP_MIN_LOG_LEVEL=3
 export HF_HOME=/home/ahmedubc/scratch/hf_cache
-# humaneval/mbpp execute model-generated code
-export HF_ALLOW_CODE_EVAL=1
 
-MODEL="${1:?usage: sbatch benchmark.slurm <hub-id-or-checkpoint-path> [extra flags]}"
-shift
+# Base model
+python benchmark.py \
+    --model Qwen/Qwen2.5-0.5B-Instruct \
+    --work-dir ./work_dir/benchmark_base_$(date +%d_%H_%M_%S)
 
 python benchmark.py \
-    --model "$MODEL" \
-    --work-dir "./work_dir/benchmark_$(basename "$MODEL")_$(date +%d_%H_%M_%S)" "$@"
+    --model Qwen/Qwen2.5-3B-Instruct \
+    --work-dir ./work_dir/benchmark_base_$(date +%d_%H_%M_%S)
 
-
-python benchmark.py --model ~/scratch/distillation/test/word_level_final --work-dir work_dir/test
+# Distilled model
+#python benchmark.py \
+#    --model <folder>/word_level_final \
+#    --work-dir ./work_dir/benchmark_distilled_$(date +%d_%H_%M_%S)

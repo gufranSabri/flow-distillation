@@ -21,6 +21,7 @@ pip install deep-translator
 pip install rouge_chinese
 pip install rouge_score
 pip install sacrebleu
+pip install openai
 pip install tensorflow
 pip install timm
 pip install umap-learn
@@ -28,5 +29,3 @@ pip install ema-pytorch
 pip install git+https://github.com/huggingface/transformers.git
 pip install git+https://github.com/huggingface/peft.git
 pip install trl==0.20.0
-cd lm-evaluation-harness && pip install -e .
-pip install "lm_eval[hf]"

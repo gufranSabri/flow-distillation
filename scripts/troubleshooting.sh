@@ -46,24 +46,18 @@ m=AutoModelForCausalLM.from_pretrained(p); t=AutoTokenizer.from_pretrained(p)
 print('loaded ok:', type(m).__name__, sum(x.numel() for x in m.parameters()))
 " "$(ls -td ~/scratch/distillation/*/ | head -1)"/word_level_final
 
-# Benchmark the distilled student against the baselines
-# (loglikelihood: mmlu, mmlu_pro, mathqa | generative: gsm8k, humaneval, mbpp)
+# Benchmark the distilled student against the baselines (Dolly generation eval:
+# exact_match, rougeL, mean_lm_loss)
 sbatch benchmark.slurm "$(ls -td ~/scratch/distillation/*/ | head -1)"/word_level_final
 sbatch benchmark.slurm Qwen/Qwen2.5-1.5B-Instruct
 sbatch benchmark.slurm Qwen/Qwen2.5-3B-Instruct
 
-# Quick benchmark smoke test: 2 docs per task, one task from each group
-export HF_ALLOW_CODE_EVAL=1   # required by humaneval/mbpp
-python benchmark.py --model Qwen/Qwen2.5-1.5B-Instruct --limit 2 \
-    --loglikelihood-tasks mathqa --generative-tasks gsm8k \
-    --work-dir ./work_dir/bm_smoke
-
-# Run a single group (or skip one with 'none')
-python benchmark.py --model <ckpt> --generative-tasks none --work-dir ./work_dir/bm_ll
-python benchmark.py --model <ckpt> --loglikelihood-tasks none --work-dir ./work_dir/bm_gen
+# Quick benchmark smoke test: 5 docs
+python benchmark.py --model Qwen/Qwen2.5-1.5B-Instruct --limit 5 --work-dir ./work_dir/bm_smoke
 
 # Scores
 cat ./work_dir/bm_smoke/summary.txt
+cat ./work_dir/bm_smoke/dolly_samples.jsonl
 
 # OOM: drop MAX_LENGTH, keep PER_DEVICE_*_BATCH_SIZE at 1 and raise
 # GRADIENT_ACCUMULATION_STEPS, or switch FINETUNE_MODE to lora.

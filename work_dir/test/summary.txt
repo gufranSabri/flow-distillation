@@ -1,0 +1,5 @@
+task   metric           value
+-----------------------------
+dolly  exact_match     0.0000
+dolly  rougeL         11.8845
+dolly  mean_lm_loss    2.1119
