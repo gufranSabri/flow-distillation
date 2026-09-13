@@ -22,11 +22,6 @@ export HF_TOKEN=token
 # Quick smoke test: tiny sample counts, frequent logging, few steps.
 python main.py --work-dir smoke --config configs/word_level.yaml
 
-# Each distillation target
-python main.py --work-dir smoke_logits  --config configs/word_level.yaml   # DISTILL_TARGET: logits
-python main.py --work-dir smoke_hidden  --config configs/word_level.yaml   # DISTILL_TARGET: hidden_states
-python main.py --work-dir smoke_both    --config configs/word_level.yaml   # DISTILL_TARGET: both
-
 # Data pipeline only (prints a decoded sample; verifies labels are pre-shifted)
 python utils/data.py --config configs/word_level.yaml
 

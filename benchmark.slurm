@@ -37,3 +37,6 @@ shift
 python benchmark.py \
     --model "$MODEL" \
     --work-dir "./work_dir/benchmark_$(basename "$MODEL")_$(date +%d_%H_%M_%S)" "$@"
+
+
+python benchmark.py --model ~/scratch/distillation/test/word_level_final --work-dir work_dir/test

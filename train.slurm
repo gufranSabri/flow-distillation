@@ -9,8 +9,8 @@
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=24
-#SBATCH --mem=60G
-#SBATCH --time=1-00:00:00
+#SBATCH --mem=30G
+#SBATCH --time=12:00:00
 
 # SUBMIT THIS FROM THE REPO ROOT:  sbatch train.slurm [run-name]
 set -euo pipefail
@@ -36,7 +36,6 @@ python main.py \
     --config configs/word_level.yaml
 
 
-
-# python main.py \
-#     --work-dir test \
-#     --config configs/word_level.yaml
+NAME="test_srkl"
+python main.py --work-dir "$NAME" --config configs/word_level.yaml
+python benchmark.py --model ~/scratch/distillation/"$NAME"/word_level_final --work-dir work_dir/"$NAME"

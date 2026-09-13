@@ -1,14 +1,50 @@
+import inspect
 import json
 import math
 import os
 import shutil
+import sys
 
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 from transformers import get_linear_schedule_with_warmup
 
-from src.models.word_level import RelationCapture, save_student
+from src.models.word_level import save_student
+from utils import losses as loss_fns
+
+
+# Divergences selectable via DISTILL_LOSS. All come from utils/losses.py, which is
+# DistiLLM's losses.py verbatim, so they keep its
+# (logits, teacher_logits, no_model_batch) signature.
+DISTILL_LOSSES = {
+    "forward_kl":        loss_fns.forward_kl,
+    "reverse_kl":        loss_fns.reverse_kl,
+    "symmetric_kl":      loss_fns.symmetric_kl,
+    "js_distance":       loss_fns.js_distance,
+    "tv_distance":       loss_fns.tv_distance,
+    "skewed_forward_kl": loss_fns.skewed_forward_kl,
+    "skewed_reverse_kl": loss_fns.skewed_reverse_kl,
+}
+
+
+def resolve_distill_loss(name, lam):
+    """Looks up DISTILL_LOSS and validates DISTILL_LOSS_LAM against it, so a bad
+    config fails at construction rather than on the first backward pass."""
+    if name not in DISTILL_LOSSES:
+        raise ValueError(
+            f"Unknown DISTILL_LOSS {name!r}; choose one of {sorted(DISTILL_LOSSES)}"
+        )
+    fn = DISTILL_LOSSES[name]
+    if lam is None:
+        return fn, {}
+    if "lam" not in inspect.signature(fn).parameters:
+        raise ValueError(
+            f"DISTILL_LOSS_LAM={lam} was set but {name!r} takes no lam; "
+            "leave DISTILL_LOSS_LAM null for this loss."
+        )
+    return fn, {"lam": lam}
 
 
 def _seq_mean(per_token, mask):
@@ -18,12 +54,29 @@ def _seq_mean(per_token, mask):
     return ((per_token * mask).sum(-1) / denom).mean()
 
 
-def kd_loss(student_logits, teacher_logits, mask, temperature):
-    """Forward KL[p_teacher || q_student], computed explicitly in log-space."""
-    t_logprobs = F.log_softmax(teacher_logits.float() / temperature, dim=-1)
-    s_logprobs = F.log_softmax(student_logits.float() / temperature, dim=-1)
-    per_token = (t_logprobs.exp() * (t_logprobs - s_logprobs)).sum(-1)
-    return _seq_mean(per_token, mask) * (temperature ** 2)
+def kd_loss(student_logits, teacher_logits, labels, loss_fn, temperature, **kwargs):
+    """Divergence between the teacher and student next-token distributions.
+
+    `loss_fn` reads its own mask off no_model_batch["label"], so the raw labels
+    tensor is handed over rather than the float mask the other losses take.
+
+    It also reduces with a flat mean over every unmasked token it is given, so it
+    is called one sequence at a time and averaged across the batch — that keeps
+    the per-sequence aggregation of _seq_mean (phase1.md 3) and keeps the KD term
+    on the same footing as the CE term it is mixed with via KD_LAMBDA. At
+    PER_DEVICE_TRAIN_BATCH_SIZE=1 this is a single call either way.
+
+    Temperature follows the Hinton convention (soften both sides, rescale by tau^2
+    so gradient magnitude stays tau-independent). That rescaling is only strictly
+    motivated for the KL family; TEMPERATURE=1.0, the default, makes it a no-op.
+    """
+    s_logits = student_logits.float() / temperature
+    t_logits = teacher_logits.float() / temperature
+    per_seq = torch.stack([
+        loss_fn(s_logits[i:i + 1], t_logits[i:i + 1], {"label": labels[i:i + 1]}, **kwargs)
+        for i in range(s_logits.shape[0])
+    ])
+    return per_seq.mean() * (temperature ** 2)
 
 
 def ce_loss(student_logits, labels, mask):
@@ -36,16 +89,6 @@ def ce_loss(student_logits, labels, mask):
     return _seq_mean(per_token, mask)
 
 
-def relation_loss(student_rel, teacher_rel, mask):
-    """KL between teacher/student attention and value-relation maps (MiniLMv2)."""
-    total = 0.0
-    for (s_attn, s_val), (t_attn, t_val) in zip(student_rel, teacher_rel):
-        for s, t in ((s_attn, t_attn), (s_val, t_val)):
-            per_token = (t * (t.clamp_min(1e-9).log() - s.clamp_min(1e-9).log())).sum(-1)
-            total = total + _seq_mean(per_token.mean(1), mask)
-    return total / max(len(student_rel), 1)
-
-
 class WordLevelTrainer:
     def __init__(self, args, student, teacher, tokenizer, train_ds, val_ds, collator):
         self.args = args
@@ -55,10 +98,9 @@ class WordLevelTrainer:
         self.device = args.device
         self.log = args.logger
 
-        self.use_logits = args.DISTILL_TARGET in ("logits", "both")
-        self.use_hidden = args.DISTILL_TARGET in ("hidden_states", "both")
-        if args.DISTILL_TARGET not in ("logits", "hidden_states", "both"):
-            raise ValueError(f"Unknown DISTILL_TARGET {args.DISTILL_TARGET!r}")
+        self.distill_loss, self.loss_kwargs = resolve_distill_loss(
+            args.DISTILL_LOSS, getattr(args, "DISTILL_LOSS_LAM", None),
+        )
 
         self.train_loader = DataLoader(
             train_ds, batch_size=args.PER_DEVICE_TRAIN_BATCH_SIZE,
@@ -81,13 +123,13 @@ class WordLevelTrainer:
             self.total_steps,
         )
 
-        self.student_cap = self.teacher_cap = None
-        if self.use_hidden:
-            self.student_cap = RelationCapture(_base(student), args.RELATION_LAYERS)
-            self.teacher_cap = RelationCapture(_base(teacher), args.RELATION_LAYERS)
-
         self.metrics_path = os.path.join(args.work_dir, "metrics.jsonl")
         self.step = 0
+
+    def _log_console(self, message):
+        # tqdm.write keeps the message from being overwritten by a bar redraw
+        self.log(message)
+        tqdm.write(message, file=sys.stdout)
 
     def _forward(self, batch):
         input_ids = batch["input_ids"].to(self.device)
@@ -95,32 +137,21 @@ class WordLevelTrainer:
         labels = batch["labels"].to(self.device)
         loss_mask = (labels != -100).float()
 
-        if self.student_cap:
-            self.student_cap.clear()
-            self.teacher_cap.clear()
-
         with torch.no_grad():
             teacher_out = self.teacher(input_ids=input_ids, attention_mask=attn_mask)
         student_out = self.student(input_ids=input_ids, attention_mask=attn_mask)
 
         s_logits, t_logits = student_out.logits, teacher_out.logits
-        parts = {"ce": ce_loss(s_logits, labels, loss_mask)}
-
-        if self.use_logits:
-            parts["kd"] = kd_loss(s_logits, t_logits, loss_mask, self.args.TEMPERATURE)
-        if self.use_hidden:
-            R = self.args.NUM_RELATION_HEADS
-            with torch.no_grad():
-                teacher_rel = self.teacher_cap.relations(R, attn_mask)
-            parts["rel"] = relation_loss(
-                self.student_cap.relations(R, attn_mask), teacher_rel, loss_mask,
-            )
+        parts = {
+            "ce": ce_loss(s_logits, labels, loss_mask),
+            "kd": kd_loss(
+                s_logits, t_logits, labels, self.distill_loss,
+                self.args.TEMPERATURE, **self.loss_kwargs,
+            ),
+        }
 
         lam = self.args.KD_LAMBDA
-        distill = parts.get("kd", torch.zeros((), device=self.device))
-        if self.use_hidden:
-            distill = distill + self.args.HIDDEN_WEIGHT * parts["rel"]
-        loss = lam * distill + (1 - lam) * parts["ce"]
+        loss = lam * parts["kd"] + (1 - lam) * parts["ce"]
 
         # fraction of positions where student and teacher pick the same top-1 token
         agree = (((s_logits.argmax(-1) == t_logits.argmax(-1)).float() * loss_mask).sum()
@@ -131,12 +162,17 @@ class WordLevelTrainer:
         args = self.args
         accum = args.GRADIENT_ACCUMULATION_STEPS
         n_batches = len(self.train_loader)
-        self.log(f"Training {self.total_steps} steps "
-                 f"(target={args.DISTILL_TARGET}, mode={args.FINETUNE_MODE})")
+        spec = ", ".join(
+            [f"loss={args.DISTILL_LOSS}"]
+            + [f"{k}={v}" for k, v in self.loss_kwargs.items()]
+            + [f"mode={args.FINETUNE_MODE}"]
+        )
+        self.log(f"Training {self.total_steps} steps ({spec})")
 
         self.student.train()
         self.teacher.eval()
         running = 0.0
+        pbar = _bar(total=self.total_steps, desc="train", unit="step", initial=self.step)
 
         for epoch in range(args.TRAIN_EPOCHS):
             for i, batch in enumerate(self.train_loader):
@@ -154,14 +190,16 @@ class WordLevelTrainer:
                 self.scheduler.step()
                 self.optimizer.zero_grad(set_to_none=True)
                 self.step += 1
+                pbar.update(1)
+                pbar.set_postfix(epoch=epoch, loss=f"{loss.item():.4f}", refresh=False)
 
                 if self.step % args.LOG_EVERY == 0:
                     avg = running / (accum * args.LOG_EVERY)
                     detail = "  ".join(f"{k}={v.item():.4f}" for k, v in parts.items())
                     self._record({"split": "train", "step": self.step, "epoch": epoch,
                                   "loss": avg, "lr": self.scheduler.get_last_lr()[0]})
-                    self.log(f"[train] step {self.step}/{self.total_steps}  "
-                             f"loss={avg:.4f}  {detail}", console_print=True)
+                    self._log_console(f"[train] step {self.step}/{self.total_steps}  "
+                                      f"loss={avg:.4f}  {detail}")
                     running = 0.0
 
                 if self.step % args.EVAL_EVERY == 0:
@@ -169,21 +207,19 @@ class WordLevelTrainer:
                 if self.step % args.SAVE_EVERY == 0:
                     self.save_checkpoint()
 
+        pbar.close()
         self.evaluate()
         final_dir = os.path.join(args.work_dir, f"{args.APPROACH}_final")
         save_student(self.student, self.tokenizer, final_dir)
         self.log(f"Saved final model to {final_dir}")
-
-        if self.student_cap:
-            self.student_cap.remove()
-            self.teacher_cap.remove()
 
     @torch.no_grad()
     def evaluate(self):
         self.student.eval()
         totals, agrees, n = {}, 0.0, 0
 
-        for batch in self.val_loader:
+        for batch in _bar(iterable=self.val_loader, desc="eval", unit="batch",
+                          leave=False):
             loss, parts, agree = self._forward(batch)
             totals["loss"] = totals.get("loss", 0.0) + loss.item()
             for k, v in parts.items():
@@ -195,9 +231,9 @@ class WordLevelTrainer:
         row = {"split": "val", "step": self.step, "agreement": agrees / n}
         row.update({k: v / n for k, v in totals.items()})
         self._record(row)
-        self.log("[val] " + "  ".join(
+        self._log_console("[val] " + "  ".join(
             f"{k}={v:.4f}" for k, v in row.items() if isinstance(v, float)
-        ), console_print=True)
+        ))
 
         self.student.train()
         return row
@@ -230,6 +266,13 @@ class WordLevelTrainer:
             f.write(json.dumps(row) + "\n")
 
 
-def _base(model):
-    # unwrap PEFT so hooks land on the real decoder layers
-    return model.get_base_model() if hasattr(model, "get_base_model") else model
+def _bar(**kwargs):
+    """tqdm configured for both a terminal and a slurm log file: under a redirect
+    the bar would otherwise emit a refresh line every fraction of a second, so
+    throttle it hard when stdout isn't a tty."""
+    interactive = sys.stdout.isatty()
+    return tqdm(
+        file=sys.stdout, dynamic_ncols=True,
+        mininterval=0.5 if interactive else 30.0,
+        **kwargs,
+    )

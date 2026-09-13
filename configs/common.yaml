@@ -3,8 +3,8 @@ seed: 42
 APPROACH: "word_level"
 
 # ── Models ────────────────────────────────────────────────────────────────────
-SMALL_MODEL_ID   : "Qwen/Qwen2.5-1.5B-Instruct"
-LARGE_MODEL_ID   : "Qwen/Qwen2.5-3B-Instruct"
+SMALL_MODEL_ID   : "Qwen/Qwen3.5-0.8B"
+LARGE_MODEL_ID   : "Qwen/Qwen3.5-9B"
 
 # ── Dataset ────────────────────────────────────────────────────────────────────
 DATASET_ID: "HuggingFaceTB/smoltalk"
@@ -14,9 +14,22 @@ DATASET_SUBSETS  :
   - "numina-cot-100k"
   - "openhermes-100k"
   - "smol-magpie-ultra"
-MAX_TRAIN_SAMPLES: 10000
+MAX_TRAIN_SAMPLES: 100000
 MAX_VAL_SAMPLES: 5000
 MAX_LENGTH: 2048
+
+# ── Distillation loss ──────────────────────────────────────────────────────────
+# Which divergence to match teacher/student next-token distributions with.
+# One of (see utils/losses.py, taken from DistiLLM):
+#   forward_kl | reverse_kl | symmetric_kl | js_distance | tv_distance
+#   skewed_forward_kl | skewed_reverse_kl
+DISTILL_LOSS: "reverse_kl"
+
+# Interpolation weight for the losses that take one (symmetric_kl, js_distance,
+# skewed_forward_kl, skewed_reverse_kl). null keeps each function's own default
+# (0.9 for symmetric_kl/js_distance, 0.1 for the skewed pair). Setting it for a
+# loss that takes no lam is an error rather than a silent no-op.
+DISTILL_LOSS_LAM: null
 
 # ── Training ───────────────────────────────────────────────────────────────────
 TRAIN_EPOCHS: 1

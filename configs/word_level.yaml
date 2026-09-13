@@ -1,17 +1,8 @@
 APPROACH: "word_level"
 
 # ── Distillation ───────────────────────────────────────────────────────────────
-# logits | hidden_states | both
-DISTILL_TARGET: "logits"
-
 TEMPERATURE: 1.0      # tau; 1.0 = MiniLLM word-level KD, >1 = Hinton (loss scaled by tau^2)
 KD_LAMBDA: 0.5        # L = lambda * L_kd + (1 - lambda) * L_ce
-HIDDEN_WEIGHT: 1.0    # weight on the relation loss when DISTILL_TARGET includes hidden_states
-
-# MiniLMv2 relation matching: Q/K/V are re-split into this many relation heads,
-# making the L x L relation maps identical in shape across differing hidden dims.
-NUM_RELATION_HEADS: 8
-RELATION_LAYERS: [-1]   # layer indices to match (negative = from the end)
 
 # ── Student ────────────────────────────────────────────────────────────────────
 FINETUNE_MODE: "lora"   # full | lora
