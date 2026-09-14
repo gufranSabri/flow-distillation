@@ -31,10 +31,13 @@ export HF_HOME=/home/ahmedubc/scratch/hf_cache
 # Resolved under WORK_DIR_ROOT (configs/common.yaml) by distill.py.
 RUN_NAME="${1:-word_level_$(date +%d_%H_%M_%S)}"
 
+
+RUN_NAME="test"
+
 # Student/teacher: paths to the SFT checkpoints pretraining.slurm cached (its
 # WORK_DIR_ROOT/pretrained/<model> naming), not the raw hub ids.
-STUDENT_MODEL_ID="Qwen/Qwen2.5-0.5B-Instruct"
-TEACHER_MODEL_ID="Qwen/Qwen2.5-3B-Instruct"
+STUDENT_MODEL_ID="Qwen/Qwen2.5-0.5B"
+TEACHER_MODEL_ID="Qwen/Qwen2.5-3B"
 STUDENT_MODEL="$HOME/scratch/distillation/pretrained/${STUDENT_MODEL_ID//\//_}/pretrain_final"
 TEACHER_MODEL="$HOME/scratch/distillation/pretrained/${TEACHER_MODEL_ID//\//_}/pretrain_final"
 
