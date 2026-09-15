@@ -1,7 +1,7 @@
-from . import lora_ft
+from . import vanilla
 
 APPROACHES = {
-    "lora_ft": lora_ft,
+    "vanilla": vanilla,
 }
 
 

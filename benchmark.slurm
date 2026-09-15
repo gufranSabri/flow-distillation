@@ -10,7 +10,7 @@
 #SBATCH --gpus-per-node=l40s:1
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=200G
-#SBATCH --time=1-00:00:00
+#SBATCH --time=12:00:00
 
 # SUBMIT THIS FROM THE REPO ROOT:
 #   sbatch benchmark.slurm

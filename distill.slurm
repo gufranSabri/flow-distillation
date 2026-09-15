@@ -38,8 +38,8 @@ RUN_NAME="word_level"
 # WORK_DIR_ROOT/finetuned/<model> naming), not the raw hub ids.
 STUDENT_MODEL_ID="Qwen/Qwen2.5-0.5B"
 TEACHER_MODEL_ID="Qwen/Qwen2.5-3B"
-STUDENT_MODEL="$HOME/scratch/distillation/finetuned/${STUDENT_MODEL_ID//\//_}/lora_ft_final"
-TEACHER_MODEL="$HOME/scratch/distillation/finetuned/${TEACHER_MODEL_ID//\//_}/lora_ft_final"
+STUDENT_MODEL="$HOME/scratch/distillation/finetuned/${STUDENT_MODEL_ID//\//_}/vanilla_final"
+TEACHER_MODEL="$HOME/scratch/distillation/finetuned/${TEACHER_MODEL_ID//\//_}/vanilla_final"
 
 python distill.py \
     --student-model "$STUDENT_MODEL" \

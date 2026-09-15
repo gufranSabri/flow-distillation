@@ -51,7 +51,7 @@ if __name__ == "__main__":
                          help="hub id or path of the single model to SFT on Dolly "
                               "(e.g. the hub id that would otherwise go to distill.py's "
                               "--student-model/--teacher-model, to cache its SFT baseline)")
-    parser.add_argument("--approach", default="lora_ft",
+    parser.add_argument("--approach", default="vanilla",
                          help="which src/finetune/<name> config/model/trainer trio to "
                               "finetune with; its config is configs/finetune/<approach>.yaml "
                               "(see src/finetune/)")

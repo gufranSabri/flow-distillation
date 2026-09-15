@@ -96,4 +96,4 @@ work_dir/
 docs/
 slurm/
 .claude/
-scripts/troubleshooting.sh
+scripts/
