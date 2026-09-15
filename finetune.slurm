@@ -31,22 +31,42 @@ export HF_HOME=/home/ahmedubc/scratch/hf_cache
 # ground truth, cached to compare distill.py's KD-only student against.
 MODELS=(
     # "Qwen/Qwen2.5-0.5B"
-    "Qwen/Qwen2.5-3B"
+    # "Qwen/Qwen2.5-3B"
 )
+
+# Which src/finetune/<approach> trio to train with: vanilla | fm_lora.
+# vanilla keeps the bare <model> dir name so distill.slurm's paths stay valid;
+# other approaches get suffixed so runs don't overwrite each other.
+APPROACH="${1:-vanilla}"
 
 for MODEL in "${MODELS[@]}"; do
     SAFE_NAME="${MODEL//\//_}"
+    [ "$APPROACH" = "vanilla" ] || SAFE_NAME="${SAFE_NAME}_${APPROACH}"
 
     # Saved under WORK_DIR_ROOT/finetuned/<model> (configs/common.yaml resolves
     # --work-dir under WORK_DIR_ROOT unless given an explicit path).
     python finetune.py \
         --model "$MODEL" \
         --work-dir "finetuned/$SAFE_NAME" \
-        --approach vanilla \
+        --approach "$APPROACH" \
         --TRAIN_EPOCHS 3
 
     # Benchmarking output stays in the repo's own work_dir, not WORK_DIR_ROOT.
     python benchmark.py \
-        --model ~/scratch/distillation/finetuned/"$SAFE_NAME"/vanilla_final \
+        --model ~/scratch/distillation/finetuned/"$SAFE_NAME"/"${APPROACH}"_final \
         --work-dir ./work_dir/"$SAFE_NAME"
 done
+
+
+# ---------------------
+
+python finetune.py \
+    --model "Qwen/Qwen2.5-0.5B" \
+    --work-dir "finetuned/fm_lora" \
+    --approach "fm_lora" \
+    --TRAIN_EPOCHS 3
+
+# Benchmarking output stays in the repo's own work_dir, not WORK_DIR_ROOT.
+python benchmark.py \
+    --model ~/scratch/distillation/finetuned/fm_lora/fm_lora_final \
+    --work-dir ./work_dir/fm_lora

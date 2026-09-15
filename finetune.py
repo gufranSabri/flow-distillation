@@ -44,8 +44,29 @@ def main(args, approach):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        epilog="Any key from configs/common.yaml or configs/finetune/<approach>.yaml can "
-               "also be overridden, e.g. --LR 1e-4 --WEIGHT_DECAY 0.01.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Any key from configs/common.yaml or configs/finetune/<approach>.yaml can also be
+overridden, e.g. --LR 1e-4 --WEIGHT_DECAY 0.01.
+
+Examples
+--------
+# vanilla SFT (LoRA or full, per configs/finetune/vanilla.yaml)
+python finetune.py --model Qwen/Qwen2.5-0.5B --approach vanilla \\
+    --work-dir finetuned/Qwen2.5-0.5B --TRAIN_EPOCHS 3
+python benchmark.py --model ~/scratch/distillation/finetuned/Qwen2.5-0.5B/vanilla_final \\
+    --work-dir ./work_dir/Qwen2.5-0.5B
+
+# flow-matching LoRA (docs/flow-matching-lora.md)
+python finetune.py --model Qwen/Qwen2.5-0.5B --approach fm_lora \\
+    --work-dir finetuned/Qwen2.5-0.5B_fm --TRAIN_EPOCHS 3
+python benchmark.py --model ~/scratch/distillation/finetuned/Qwen2.5-0.5B_fm/fm_lora_final \\
+    --work-dir ./work_dir/Qwen2.5-0.5B_fm
+
+# fm_lora smoke test (tiny sample counts, frequent logging)
+python finetune.py --model Qwen/Qwen2.5-0.5B --approach fm_lora --work-dir fm_smoke \\
+    --MAX_TRAIN_SAMPLES 32 --MAX_VAL_SAMPLES 8 --LOG_EVERY 1 --EVAL_EVERY 5 --SAVE_EVERY 1000
+""",
     )
     parser.add_argument("--model", required=True,
                          help="hub id or path of the single model to SFT on Dolly "

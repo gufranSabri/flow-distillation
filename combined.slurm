@@ -32,6 +32,18 @@ export HF_HOME=/home/ahmedubc/scratch/hf_cache
 
 
 
+python finetune.py \
+    --model "Qwen/Qwen2.5-0.5B" \
+    --work-dir "finetuned/fm_lora" \
+    --approach "fm_lora" \
+    --TRAIN_EPOCHS 3
+
+# Benchmarking output stays in the repo's own work_dir, not WORK_DIR_ROOT.
+python benchmark.py \
+    --model ~/scratch/distillation/finetuned/fm_lora/fm_lora_final \
+    --work-dir ./work_dir/fm_lora
+
+
 
 
 
@@ -40,7 +52,7 @@ export HF_HOME=/home/ahmedubc/scratch/hf_cache
 
 # ground truth, cached to compare distill.py's KD-only student against.
 MODELS=(
-    # "Qwen/Qwen2.5-0.5B"
+    "Qwen/Qwen2.5-0.5B"
     "Qwen/Qwen2.5-3B"
 )
 
@@ -91,3 +103,10 @@ python distill.py \
 python benchmark.py \
     --model ~/scratch/distillation/"$RUN_NAME"/word_level_final \
     --work-dir ./work_dir/"$RUN_NAME"
+
+
+
+
+
+
+
