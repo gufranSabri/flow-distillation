@@ -32,21 +32,21 @@ export HF_HOME=/home/ahmedubc/scratch/hf_cache
 RUN_NAME="${1:-word_level_$(date +%d_%H_%M_%S)}"
 
 
-RUN_NAME="test"
+RUN_NAME="word_level"
 
-# Student/teacher: paths to the SFT checkpoints pretraining.slurm cached (its
-# WORK_DIR_ROOT/pretrained/<model> naming), not the raw hub ids.
+# Student/teacher: paths to the SFT checkpoints finetune.slurm cached (its
+# WORK_DIR_ROOT/finetuned/<model> naming), not the raw hub ids.
 STUDENT_MODEL_ID="Qwen/Qwen2.5-0.5B"
 TEACHER_MODEL_ID="Qwen/Qwen2.5-3B"
-STUDENT_MODEL="$HOME/scratch/distillation/pretrained/${STUDENT_MODEL_ID//\//_}/pretrain_final"
-TEACHER_MODEL="$HOME/scratch/distillation/pretrained/${TEACHER_MODEL_ID//\//_}/pretrain_final"
+STUDENT_MODEL="$HOME/scratch/distillation/finetuned/${STUDENT_MODEL_ID//\//_}/lora_ft_final"
+TEACHER_MODEL="$HOME/scratch/distillation/finetuned/${TEACHER_MODEL_ID//\//_}/lora_ft_final"
 
 python distill.py \
     --student-model "$STUDENT_MODEL" \
     --teacher-model "$TEACHER_MODEL" \
     --work-dir "$RUN_NAME" \
-    --config configs/word_level.yaml \
-    --epochs 1
+    --approach word_level \
+    --TRAIN_EPOCHS 1
 
 python benchmark.py \
     --model ~/scratch/distillation/"$RUN_NAME"/word_level_final \

@@ -5,20 +5,18 @@ import argparse
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from utils.logger import Logger
-from utils.utils import set_rng_state
+from utils.logger import Logger, log_config, log_model, log_dataset_sizes
+from utils.utils import set_rng_state, parse_cli_overrides
 from utils.data import build_dolly_datasets
 
-from src.models.word_level import load_model
-from src.trainers.word_level import WordLevelTrainer
+from src.distill import get_approach
 
 
 COMMON_CONFIG = "configs/common.yaml"
 
 
 def check_same_vocab(args, tokenizer, teacher_tokenizer):
-    """Word-level KD needs a shared vocabulary; mismatched vocabs are a hard stop
-    rather than something to pad or truncate around (phase1.md 0)."""
+    # word-level KD requires teacher and student to share a vocabulary
     if tokenizer.get_vocab() != teacher_tokenizer.get_vocab():
         raise ValueError(
             f"Teacher ({args.teacher_model}) and student ({args.student_model}) do not "
@@ -26,7 +24,7 @@ def check_same_vocab(args, tokenizer, teacher_tokenizer):
         )
 
 
-def prep_model_comps(args):
+def prep_model_comps(args, approach):
     args.logger("Loading tokenizers …")
     tokenizer = AutoTokenizer.from_pretrained(args.teacher_model, trust_remote_code=True)
     student_tokenizer = AutoTokenizer.from_pretrained(args.student_model, trust_remote_code=True)
@@ -44,14 +42,12 @@ def prep_model_comps(args):
     teacher.eval()
 
     args.logger(f"Loading student ({args.FINETUNE_MODE}): {args.student_model} …")
-    student = load_model(args, args.student_model).to(args.device)
+    student = approach.load_model(args, args.student_model).to(args.device)
 
-    trainable = sum(p.numel() for p in student.parameters() if p.requires_grad)
-    total = sum(p.numel() for p in student.parameters())
     args.logger(f"  Teacher hidden dim {teacher.config.hidden_size} / "
                 f"student hidden dim {student.config.hidden_size}")
-    args.logger(f"  Student trainable params: {trainable:,} / {total:,} "
-                f"({100 * trainable / total:.2f}%)\n")
+    log_model(args.logger, teacher, "teacher")
+    log_model(args.logger, student, "student")
 
     return tokenizer, teacher, student
 
@@ -65,41 +61,49 @@ def load_config(path):
     return merged
 
 
-def main(args):
+def main(args, approach):
     os.makedirs(args.work_dir, exist_ok=True)
     set_rng_state(args.seed)
-    args.logger = Logger(os.path.join(args.work_dir, f"{args.APPROACH}.log"))
+    args.logger = Logger(os.path.join(args.work_dir, f"{args.approach}.log"))
     args.logger(f"Work dir: {args.work_dir}", console_print=True)
+    log_config(args.logger, args)
 
-    tokenizer, teacher, student = prep_model_comps(args)
+    tokenizer, teacher, student = prep_model_comps(args, approach)
     train_ds, val_ds, collator = build_dolly_datasets(args, tokenizer)
+    log_dataset_sizes(args.logger, train_ds, val_ds)
 
-    trainer = WordLevelTrainer(
+    trainer = approach.Trainer(
         args, student, teacher, tokenizer, train_ds, val_ds, collator
     )
     trainer.train()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        epilog="Any key from configs/common.yaml or configs/distill/<approach>.yaml can "
+               "also be overridden, e.g. --DISTILL_LOSS both --TEMPERATURE 2.0.",
+    )
     parser.add_argument("--student-model", required=True,
-                         help="hub id or path (e.g. a pretraining.py SFT checkpoint) for the student")
+                         help="hub id or path (e.g. a finetune.py SFT checkpoint) for the student")
     parser.add_argument("--teacher-model", required=True,
-                         help="hub id or path (e.g. a pretraining.py SFT checkpoint) for the teacher")
+                         help="hub id or path (e.g. a finetune.py SFT checkpoint) for the teacher")
+    parser.add_argument("--approach", default="word_level",
+                         help="which src/distill/<name> config/model/trainer trio to distill "
+                              "the student with; its config is configs/distill/<approach>.yaml "
+                              "(see src/distill/); the teacher is always loaded as a plain HF "
+                              "model, as before")
     parser.add_argument("--work-dir", default=None)
-    parser.add_argument("--config", default="configs/word_level.yaml")
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--epochs", type=int, default=None,
-                         help="overrides TRAIN_EPOCHS from the config")
 
-    args = parser.parse_args()
-    for key, value in load_config(args.config).items():
+    args, unknown = parser.parse_known_args()
+    approach = get_approach(args.approach)
+    config = load_config(f"configs/distill/{args.approach}.yaml")
+    config.update(parse_cli_overrides(unknown))  # e.g. --DISTILL_LOSS both --TRAIN_EPOCHS 3
+    for key, value in config.items():
         setattr(args, key, value)
-    if args.epochs is not None:
-        args.TRAIN_EPOCHS = args.epochs
 
     # --work-dir is resolved under WORK_DIR_ROOT unless given as an explicit path
     root = os.path.expanduser(args.WORK_DIR_ROOT)
-    args.work_dir = os.path.join(root, args.work_dir or args.APPROACH)
+    args.work_dir = os.path.join(root, args.work_dir or args.approach)
 
-    main(args)
+    main(args, approach)

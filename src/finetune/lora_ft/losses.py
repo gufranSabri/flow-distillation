@@ -2,8 +2,7 @@ import torch.nn.functional as F
 
 
 def seq_mean(per_token, mask):
-    # average within each sequence first, then across the batch, so long sequences
-    # don't dominate (phase1.md 3)
+    # average within each sequence first, then across the batch, so long sequences don't dominate
     denom = mask.sum(-1).clamp(min=1)
     return ((per_token * mask).sum(-1) / denom).mean()
 

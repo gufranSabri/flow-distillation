@@ -1,31 +1,17 @@
 seed: 42
 
-APPROACH: "word_level"
-
-# Student/teacher model ids (or local checkpoint paths, e.g. a pretraining.py SFT
-# output) are CLI-only: distill.py --student-model / --teacher-model. No default.
+# Student/teacher model ids are CLI-only (distill.py --student-model / --teacher-model), no default here.
 
 # ── Dataset ────────────────────────────────────────────────────────────────────
 DATASET_ID: "databricks/databricks-dolly-15k"
-DOLLY_DEV_NUM: 1000   # first N raw rows held out as the fixed valid split (MiniLLM
-                       # convention); benchmark.py's --dolly-dev-num must match this
-                       # to avoid train/eval leakage
+DOLLY_DEV_NUM: 1000   # first N raw rows held out as the fixed valid split; must match benchmark.py's --dolly-dev-num
 MAX_TRAIN_SAMPLES: -1
 MAX_VAL_SAMPLES: -1
 MAX_LENGTH: 2048
 
 # ── Distillation loss ──────────────────────────────────────────────────────────
-# Which divergence to match teacher/student next-token distributions with.
-# One of (see utils/losses.py, taken from DistiLLM):
-#   forward_kl | reverse_kl | symmetric_kl | js_distance | tv_distance
-#   skewed_forward_kl | skewed_reverse_kl
+# Divergence to match teacher/student next-token distributions with: forward_kl | reverse_kl | both
 DISTILL_LOSS: "reverse_kl"
-
-# Interpolation weight for the losses that take one (symmetric_kl, js_distance,
-# skewed_forward_kl, skewed_reverse_kl). null keeps each function's own default
-# (0.9 for symmetric_kl/js_distance, 0.1 for the skewed pair). Setting it for a
-# loss that takes no lam is an error rather than a silent no-op.
-DISTILL_LOSS_LAM: null
 
 # ── Training ───────────────────────────────────────────────────────────────────
 TRAIN_EPOCHS: 1

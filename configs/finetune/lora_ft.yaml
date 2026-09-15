@@ -1,5 +1,3 @@
-APPROACH: "pretrain"
-
 # ── Model ──────────────────────────────────────────────────────────────────────
 FINETUNE_MODE: "full"   # full | lora
 
@@ -15,6 +13,6 @@ WEIGHT_DECAY: 0.0
 MAX_GRAD_NORM: 1.0
 
 LOG_EVERY: 10
-EVAL_EVERY: 200
-SAVE_EVERY: 200
+EVAL_EVERY: 500
+SAVE_EVERY: 500
 SAVE_TOTAL_LIMIT: 3

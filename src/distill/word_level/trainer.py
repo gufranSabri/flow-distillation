@@ -1,4 +1,3 @@
-import inspect
 import json
 import math
 import os
@@ -10,64 +9,37 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import get_linear_schedule_with_warmup
 
-from src.models.word_level import save_model
-from utils import losses as loss_fns
+from .model import save_model
+from . import losses as loss_fns
 
 
-# Divergences selectable via DISTILL_LOSS. All come from utils/losses.py, which is
-# DistiLLM's losses.py verbatim, so they keep its
-# (logits, teacher_logits, no_model_batch) signature.
+def _both_kl(logits, teacher_logits, no_model_batch):
+    return (loss_fns.forward_kl(logits, teacher_logits, no_model_batch)
+            + loss_fns.reverse_kl(logits, teacher_logits, no_model_batch))
+
+
 DISTILL_LOSSES = {
-    "forward_kl":        loss_fns.forward_kl,
-    "reverse_kl":        loss_fns.reverse_kl,
-    "symmetric_kl":      loss_fns.symmetric_kl,
-    "js_distance":       loss_fns.js_distance,
-    "tv_distance":       loss_fns.tv_distance,
-    "skewed_forward_kl": loss_fns.skewed_forward_kl,
-    "skewed_reverse_kl": loss_fns.skewed_reverse_kl,
+    "forward_kl": loss_fns.forward_kl,
+    "reverse_kl": loss_fns.reverse_kl,
+    "both": _both_kl,
 }
 
 
-def resolve_distill_loss(name, lam):
-    """Looks up DISTILL_LOSS and validates DISTILL_LOSS_LAM against it, so a bad
-    config fails at construction rather than on the first backward pass."""
+def resolve_distill_loss(name):
     if name not in DISTILL_LOSSES:
-        raise ValueError(
-            f"Unknown DISTILL_LOSS {name!r}; choose one of {sorted(DISTILL_LOSSES)}"
-        )
-    fn = DISTILL_LOSSES[name]
-    if lam is None:
-        return fn, {}
-    if "lam" not in inspect.signature(fn).parameters:
-        raise ValueError(
-            f"DISTILL_LOSS_LAM={lam} was set but {name!r} takes no lam; "
-            "leave DISTILL_LOSS_LAM null for this loss."
-        )
-    return fn, {"lam": lam}
+        raise ValueError(f"Unknown DISTILL_LOSS {name!r}; choose one of {sorted(DISTILL_LOSSES)}")
+    return DISTILL_LOSSES[name]
 
 
-def kd_loss(student_logits, teacher_logits, labels, loss_fn, temperature, **kwargs):
-    """Divergence between the teacher and student next-token distributions -- the sole
-    training objective (labels are only used to mask out the prompt, never as a CE
-    target: distillation never sees the Dolly ground-truth response).
-
-    `loss_fn` reads its own mask off no_model_batch["label"], so the raw labels
-    tensor is handed over rather than the float mask the other losses take.
-
-    It also reduces with a flat mean over every unmasked token it is given, so it
-    is called one sequence at a time and averaged across the batch. At
-    PER_DEVICE_TRAIN_BATCH_SIZE=1 this is a single call either way.
-
-    Temperature follows the Hinton convention (soften both sides, rescale by tau^2
-    so gradient magnitude stays tau-independent). That rescaling is only strictly
-    motivated for the KL family; TEMPERATURE=1.0, the default, makes it a no-op.
-    """
+def kd_loss(student_logits, teacher_logits, labels, loss_fn, temperature):
+    # loss_fn reduces over one sequence at a time, so call it per-sequence and average across the batch.
     s_logits = student_logits.float() / temperature
     t_logits = teacher_logits.float() / temperature
     per_seq = torch.stack([
-        loss_fn(s_logits[i:i + 1], t_logits[i:i + 1], {"label": labels[i:i + 1]}, **kwargs)
+        loss_fn(s_logits[i:i + 1], t_logits[i:i + 1], {"label": labels[i:i + 1]})
         for i in range(s_logits.shape[0])
     ])
+    # Hinton temperature convention: soften both sides, rescale by tau^2 (no-op at the default TEMPERATURE=1.0).
     return per_seq.mean() * (temperature ** 2)
 
 
@@ -80,9 +52,7 @@ class WordLevelTrainer:
         self.device = args.device
         self.log = args.logger
 
-        self.distill_loss, self.loss_kwargs = resolve_distill_loss(
-            args.DISTILL_LOSS, getattr(args, "DISTILL_LOSS_LAM", None),
-        )
+        self.distill_loss = resolve_distill_loss(args.DISTILL_LOSS)
 
         self.train_loader = DataLoader(
             train_ds, batch_size=args.PER_DEVICE_TRAIN_BATCH_SIZE,
@@ -109,7 +79,6 @@ class WordLevelTrainer:
         self.step = 0
 
     def _log_console(self, message):
-        # tqdm.write keeps the message from being overwritten by a bar redraw
         self.log(message)
         tqdm.write(message, file=sys.stdout)
 
@@ -125,14 +94,10 @@ class WordLevelTrainer:
 
         s_logits, t_logits = student_out.logits, teacher_out.logits
         parts = {
-            "kd": kd_loss(
-                s_logits, t_logits, labels, self.distill_loss,
-                self.args.TEMPERATURE, **self.loss_kwargs,
-            ),
+            "kd": kd_loss(s_logits, t_logits, labels, self.distill_loss, self.args.TEMPERATURE),
         }
         loss = parts["kd"]
 
-        # fraction of positions where student and teacher pick the same top-1 token
         agree = (((s_logits.argmax(-1) == t_logits.argmax(-1)).float() * loss_mask).sum()
                  / loss_mask.sum().clamp(min=1))
         return loss, parts, agree
@@ -141,12 +106,7 @@ class WordLevelTrainer:
         args = self.args
         accum = args.GRADIENT_ACCUMULATION_STEPS
         n_batches = len(self.train_loader)
-        spec = ", ".join(
-            [f"loss={args.DISTILL_LOSS}"]
-            + [f"{k}={v}" for k, v in self.loss_kwargs.items()]
-            + [f"mode={args.FINETUNE_MODE}"]
-        )
-        self.log(f"Training {self.total_steps} steps ({spec})")
+        self.log(f"Training {self.total_steps} steps (loss={args.DISTILL_LOSS}, mode={args.FINETUNE_MODE})")
 
         self.student.train()
         self.teacher.eval()
@@ -159,8 +119,6 @@ class WordLevelTrainer:
                 (loss / accum).backward()
                 running += loss.item()
 
-                # also step on the last batch, so a partial accumulation window
-                # isn't dropped and left to leak into the next epoch
                 if (i + 1) % accum != 0 and (i + 1) != n_batches:
                     continue
 
@@ -188,7 +146,7 @@ class WordLevelTrainer:
 
         pbar.close()
         self.evaluate()
-        final_dir = os.path.join(args.work_dir, f"{args.APPROACH}_final")
+        final_dir = os.path.join(args.work_dir, f"{args.approach}_final")
         save_model(self.student, self.tokenizer, final_dir)
         self.log(f"Saved final model to {final_dir}")
 
@@ -246,9 +204,7 @@ class WordLevelTrainer:
 
 
 def _bar(**kwargs):
-    """tqdm configured for both a terminal and a slurm log file: under a redirect
-    the bar would otherwise emit a refresh line every fraction of a second, so
-    throttle it hard when stdout isn't a tty."""
+    # throttle refreshes hard when stdout isn't a tty (e.g. redirected to a slurm log)
     interactive = sys.stdout.isatty()
     return tqdm(
         file=sys.stdout, dynamic_ncols=True,

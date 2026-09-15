@@ -20,10 +20,10 @@ export HF_TOKEN=token
 # ========================
 
 # Quick smoke test: tiny sample counts, frequent logging, few steps.
-python main.py --work-dir smoke --config configs/word_level.yaml
+python distill.py --work-dir smoke --approach word_level
 
 # Data pipeline only (prints a decoded sample; verifies labels are pre-shifted)
-python utils/data.py --config configs/word_level.yaml
+python utils/data.py
 
 # Watch training progress
 tail -f "$(ls -td ~/scratch/distillation/*/ | head -1)"/word_level.log

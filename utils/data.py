@@ -1,8 +1,6 @@
-import os
-from tqdm import tqdm
 import random
 
-from pprint import pprint
+from tqdm import tqdm
 from datasets import load_dataset, Dataset
 from transformers import DataCollatorForSeq2Seq
 
@@ -31,7 +29,6 @@ class SmolTalkProcessor(DataProcessor):
         _, ex = indexed_example
         messages = ex["messages"]
 
-        # Category filter (hardcoded)
         category = ex.get("category")
         if category in self.MAGPIE_EXCLUDE_CATS:
             return []
@@ -44,11 +41,7 @@ class SmolTalkProcessor(DataProcessor):
             if response["role"] != "assistant":
                 continue
 
-            # Always render via the tokenizer's chat template: evaluation
-            # (lm-evaluation-harness) is run with --apply_chat_template, so
-            # training inputs must match that formatting exactly, hardcoded —
-            # a raw/no-template split here would be out-of-distribution at
-            # eval time, not closer to it.
+            # hardcoded: eval runs with --apply_chat_template, so training must match that formatting
             context_ids = self.tokenizer.apply_chat_template(
                 context,
                 tokenize=True,
@@ -65,10 +58,7 @@ class SmolTalkProcessor(DataProcessor):
             if len(context_ids) + len(response_ids) > self.config.MAX_LENGTH:
                 break
 
-            # Build input_ids and labels.
-            # NOTE: labels are deliberately PRE-SHIFTED left by one relative to
-            # input_ids so that labels[t] == input_ids[t+1] (the token predicted by
-            # the logits at position t), with a trailing eos as the final target.
+            # labels are pre-shifted: labels[t] == input_ids[t+1], with a trailing eos as the final target
             input_ids = context_ids + response_ids
             labels    = [-100] * len(context_ids[1:]) + response_ids + [self.tokenizer.eos_token_id]
 
@@ -81,11 +71,7 @@ class SmolTalkProcessor(DataProcessor):
 
 
 class DollyProcessor(DataProcessor):
-    """Alpaca-template, single-turn instruction/response pairs — MiniLLM's Dolly
-    recipe (docs/repos/minillm/tools/process_data_dolly.py::Encoder.encode), copied
-    exactly for the prompt template and tokenization. Unlike SmolTalkProcessor, this
-    never calls apply_chat_template — a deliberate exact replication of MiniLLM's own
-    training data, despite Qwen being chat-tuned."""
+    """MiniLLM's Alpaca-template Dolly recipe, replicated exactly (no chat template, even though Qwen is chat-tuned)."""
 
     def line2data(self, indexed_example: tuple) -> list:
         _, ex = indexed_example
@@ -101,8 +87,7 @@ class DollyProcessor(DataProcessor):
         if len(prompt_ids) + len(response_ids) + 1 > self.config.MAX_LENGTH:
             return []
 
-        # Same pre-shifted-labels convention as SmolTalkProcessor.line2data:
-        # labels[t] == input_ids[t+1], with a trailing eos as the final target.
+        # same pre-shifted-labels convention as SmolTalkProcessor.line2data
         input_ids = prompt_ids + response_ids
         labels    = [-100] * len(prompt_ids[1:]) + response_ids + [self.tokenizer.eos_token_id]
 
@@ -126,33 +111,19 @@ _DOLLY_TEMPLATE_WITH_INPUT = (
 
 
 def format_dolly_prompt(instruction: str, input_text: str) -> str:
-    """MiniLLM's generic (non-qwen2) Alpaca template — shared by DollyProcessor and
-    dolly_eval so training and eval prompts never drift apart. Deliberately no chat
-    template, matching MiniLLM's own base-model recipe exactly."""
+    """MiniLLM's Alpaca template, shared with dolly_eval so train/eval prompts never drift apart."""
     if not input_text:
         return _DOLLY_TEMPLATE_NO_INPUT.format(instruction=instruction)
     return _DOLLY_TEMPLATE_WITH_INPUT.format(instruction=instruction, input=input_text)
 
 
 def load_dolly_splits(dataset_id=DOLLY_DATASET_ID, dev_num=DOLLY_DEV_NUM_DEFAULT):
-    """Replicates tools/process_data_dolly.py's split on the dataset's natural
-    (unshuffled) row order: first `dev_num` rows -> valid, rest -> train. Verified
-    against MiniLLM's own valid.jsonl: row 0 matches exactly."""
+    """First `dev_num` rows (natural order) -> valid, rest -> train, matching MiniLLM's split."""
     full = load_dataset(dataset_id, split="train")
     return full.select(range(dev_num, len(full))), full.select(range(dev_num))
 
 
 def prepare_tokenizer(tokenizer, logger=None, require_chat_template=True):
-    """Validate/complete the special tokens needed downstream, regardless of
-    which model the tokenizer belongs to.
-
-    - A chat template is required by SmolTalkProcessor.line2data (apply_chat_template),
-      but not by DollyProcessor (require_chat_template=False), which never calls it.
-    - eos_token_id is required to terminate labels (see line2data); some base
-      tokenizers leave it unset.
-    - pad_token is required by DataCollatorForSeq2Seq at collation time; several
-      base models (Qwen2, Llama) ship without one, so we fall back to eos.
-    """
     log = logger or (lambda msg: None)
 
     if require_chat_template and tokenizer.chat_template is None:
@@ -168,6 +139,7 @@ def prepare_tokenizer(tokenizer, logger=None, require_chat_template=True):
         )
 
     if tokenizer.pad_token_id is None:
+        # several base tokenizers (Qwen2, Llama) ship without one; fall back to eos
         log(f"  Tokenizer {tokenizer.name_or_path!r} has no pad token; "
             f"using eos_token ({tokenizer.eos_token!r}) as pad_token.")
         tokenizer.pad_token = tokenizer.eos_token
@@ -239,7 +211,6 @@ def build_datasets(args, tokenizer):
     args.logger(f"  Total after length filter (≤{args.MAX_LENGTH} tokens): "
                 f"{len(train_data)} train / {len(val_data)} val\n")
 
-    # Wrap in HuggingFace Dataset for the collator
     train_tokenized = Dataset.from_list(train_data)
     val_tokenized   = Dataset.from_list(val_data)
 
@@ -286,9 +257,6 @@ def build_dolly_datasets(args, tokenizer):
         random.shuffle(val_data)
         val_data = val_data[:args.MAX_VAL_SAMPLES]
 
-    args.logger(f"  Total after length filter (≤{args.MAX_LENGTH} tokens): "
-                f"{len(train_data)} train / {len(val_data)} val\n")
-
     train_tokenized = Dataset.from_list(train_data)
     val_tokenized   = Dataset.from_list(val_data)
 
@@ -301,64 +269,4 @@ def build_dolly_datasets(args, tokenizer):
     )
 
     return train_tokenized, val_tokenized, data_collator
-
-
-def load_config(path):
-    import yaml
-
-    COMMON_CONFIG = "configs/common.yaml"
-
-    merged = {}
-    for cfg_path in (COMMON_CONFIG, path):
-        with open(cfg_path) as f:
-            data = yaml.safe_load(f) or {}
-        merged.update(data)
-    return merged
-
-
-
-if __name__ == "__main__":
-    import argparse
-    from transformers import AutoTokenizer, AutoConfig
-    from logger import Logger
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--work-dir", default="./work_dir/test_data")
-    parser.add_argument("--config", default="configs/mlp.yaml")
-    parser.add_argument("--device", default="cuda")
-
-    args = parser.parse_args()
-
-    config = load_config(args.config)
-    for key, value in config.items():
-        setattr(args, key, value)
-
-    setattr(args, "logger", Logger(os.path.join(args.work_dir, f"test_data.log"),))
-    os.makedirs(args.work_dir, exist_ok=True)
-    
-
-    base_model_name = "Qwen/Qwen2.5-1.5B"
-    config = AutoConfig.from_pretrained(base_model_name)
-    tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-    
-    train_tokenized, val_tokenized, data_collator = build_datasets(args, tokenizer)
-
-    # check some samples
-    for i in range(1):
-        print(f"Sample {i} from train dataset:")
-        print("input_ids:", len(train_tokenized[i]["input_ids"]))
-        print("labels:", len(train_tokenized[i]["labels"]))
-        print("-" * 50)
-
-        # detokenize (labels use -100 to mask out context positions from the loss,
-        # which isn't a valid token id, so strip those before decoding)
-        input_text = tokenizer.decode(train_tokenized[i]["input_ids"], skip_special_tokens=False)
-        label_ids  = [tok for tok in train_tokenized[i]["labels"] if tok != -100]
-        label_text = tokenizer.decode(label_ids, skip_special_tokens=False)
-
-        print("-" * 50)
-        print("Detokenized input:", input_text)
-        print("-" * 50)
-        print("Detokenized label:", label_text)
-        print("-" * 50)
 

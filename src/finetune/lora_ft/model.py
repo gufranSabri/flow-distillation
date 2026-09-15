@@ -5,9 +5,7 @@ from transformers import AutoModelForCausalLM
 
 
 def load_model(args, model_id):
-    """Loads model_id for training. LoRA is merged back into the base weights before
-    saving, so checkpoints always reload as a plain AutoModelForCausalLM. Shared by
-    distill.py (student) and pretraining.py (whichever single model it's SFT-ing)."""
+    """Loads model_id for training, applying LoRA if configured."""
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         dtype=torch.bfloat16,
@@ -35,8 +33,7 @@ def save_model(model, tokenizer, save_dir):
     """Saves a standalone HF model that AutoModelForCausalLM.from_pretrained can load."""
     out = model
     if hasattr(out, "merge_and_unload"):
-        # merge a copy: merge_and_unload() strips the adapters, which would leave the
-        # live model with nothing trainable for the rest of training
+        # merge a copy so the live model keeps its adapters for the rest of training
         out = copy.deepcopy(model).merge_and_unload()
 
     use_cache = out.config.use_cache

@@ -1,9 +1,5 @@
-APPROACH: "word_level"
-
 # ── Distillation ───────────────────────────────────────────────────────────────
-# KD-only: the student never sees the Dolly ground-truth response as a CE target,
-# only the teacher's next-token distribution (see src/trainers/word_level.py::kd_loss).
-# For a CE/SFT baseline on the same data, use pretraining.py instead.
+# KD-only: no CE loss against the Dolly ground truth, only teacher-distribution matching
 TEMPERATURE: 1.0      # tau; 1.0 = MiniLLM word-level KD, >1 = Hinton (loss scaled by tau^2)
 
 # ── Student ────────────────────────────────────────────────────────────────────

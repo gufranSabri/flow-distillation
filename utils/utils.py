@@ -1,52 +1,37 @@
-
 import random
-from pathlib import Path
 
 import numpy as np
 import torch
+import yaml
 
-from safetensors.torch import save_file
-from transformers import AutoTokenizer
+
+def parse_cli_overrides(argv):
+    """Turns leftover --KEY VALUE / --KEY=VALUE CLI tokens into a dict of yaml-typed config overrides."""
+    overrides = {}
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if not tok.startswith("--"):
+            raise ValueError(f"Unexpected CLI argument {tok!r}; overrides must look like --KEY VALUE")
+        tok = tok[2:]
+        if "=" in tok:
+            key, value = tok.split("=", 1)
+            i += 1
+        else:
+            key = tok
+            if i + 1 >= len(argv):
+                raise ValueError(f"Missing value for override --{key}")
+            value = argv[i + 1]
+            i += 2
+        overrides[key] = yaml.safe_load(value)
+    return overrides
 
 
 def set_rng_state(seed):
-    # Python's `random` must be seeded too: utils/data.py shuffles with it, and under
-    # DDP every rank builds the dataset independently — unseeded, each rank would end
-    # up with a DIFFERENT sample subset/order after the cap, silently desyncing the
-    # DistributedSampler's assumption that all ranks hold the same dataset.
+    # also seeds `random`: utils/data.py shuffles with it, and unseeded DDP ranks would desync their dataset order
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
-
-def save_hf_model(model, save_dir, base_model_name):
-    save_path = Path(save_dir)
-    save_path.mkdir(parents=True, exist_ok=True)
-
-    # Persist only the trained tensors (the FlowNet + projector, selected by
-    # trainability). The teacher lm_head readout is FROZEN — not trainable, not saved;
-    # it is reloaded from the teacher model.
-    trainable_names = {
-        name for name, param in model.named_parameters() if param.requires_grad
-    }
-    state_dict = model.state_dict()
-    trainable_state = {k: v for k, v in state_dict.items() if k in trainable_names}
-    assert len(trainable_state) > 0, (
-        "No trainable weights selected for saving — refusing to write an empty "
-        "checkpoint. Check that named_parameters() keys match state_dict() keys."
-    )
-    save_file(trainable_state, save_path / "model.safetensors")
-
-    # model.config is already a FlowConfig (model_type = "flow_excitation"); save it
-    # as-is. The reload path reconstructs FlowModel from this config alone and
-    # re-derives the base Qwen model from config.base_model, so no fields from the
-    # base model's own config need to be merged in here. (A prior version merged onto
-    # a cloned Qwen2Config, whose class-level model_type = "qwen2" silently overrode
-    # any instance-level override at save_pretrained/to_dict time.)
-    model.config.save_pretrained(save_path)
-
-    tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-    tokenizer.save_pretrained(save_path)

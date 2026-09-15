@@ -8,8 +8,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
 def load_model(path, device, dtype):
-    """Loads a local checkpoint or a hub id the same way. Trainer checkpoints are
-    saved as plain HF models (LoRA merged), so no custom loader is needed."""
+    """Loads a local checkpoint or a hub id the same way; trainer checkpoints are plain HF models (LoRA merged)."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -30,8 +29,7 @@ def summarize(results, work_dir):
         for name, value in metrics.items():
             if name == "alias" or not isinstance(value, (int, float)) or "," not in name:
                 continue
-            # metrics are keyed "<metric>,<filter>" (e.g. "acc_stderr,none");
-            # keep the filter only when a task reports several (gsm8k has two)
+            # metrics are keyed "<metric>,<filter>" (e.g. "acc_stderr,none"); keep the filter only when a task reports several
             metric, _, filt = name.partition(",")
             if metric.endswith("_stderr"):
                 continue
@@ -80,15 +78,12 @@ if __name__ == "__main__":
              "(dolly, self_inst, vicuna, s_ni, u_inst)",
     )
 
-    # Dolly-only: which HF dataset/split backs the "dolly" task (must match training's
-    # DATASET_ID/DOLLY_DEV_NUM to avoid leakage). The other four tasks source their own
-    # fixed eval sets from the MiniLLM Hub org.
+    # Dolly-only: must match training's DATASET_ID/DOLLY_DEV_NUM to avoid leakage; other tasks use fixed MiniLLM eval sets
     parser.add_argument("--dolly-dataset-id", default="databricks/databricks-dolly-15k")
     parser.add_argument("--dolly-dev-num", type=int, default=1000,
                          help="must match training's DOLLY_DEV_NUM to avoid leakage")
 
-    # Generation hyperparameters, shared across every task (MiniLLM uses one generation
-    # config for its whole eval suite: scripts/*/eval/eval_main_*.sh).
+    # generation hyperparameters, shared across every task (MiniLLM uses one config for its whole eval suite)
     parser.add_argument("--gen-max-length", type=int, default=512)
     parser.add_argument("--gen-max-prompt-length", type=int, default=256)
     parser.add_argument("--gen-do-sample", dest="gen_do_sample", action="store_true", default=True)
@@ -99,9 +94,7 @@ if __name__ == "__main__":
     parser.add_argument("--gen-no-repeat-ngram-size", type=int, default=6)
     parser.add_argument("--gen-repetition-penalty", type=float, default=None)
 
-    # GPT4 pairwise-judge metric (MiniLLM: model response vs. ground truth answer, 1-10
-    # scores from GPT-4, reported as a ratio of totals). Off by default -- it costs real
-    # API calls. Needs OPENAI_API_KEY (or --gpt4-eval-api-key).
+    # GPT4 pairwise-judge metric, off by default (costs API calls; needs OPENAI_API_KEY or --gpt4-eval-api-key)
     parser.add_argument("--gpt4-eval", action="store_true", default=False,
                          help="also score generations with a GPT-4 judge against the "
                               "reference answer (off by default; costs API calls)")

@@ -9,14 +9,12 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import get_linear_schedule_with_warmup
 
-from src.models.word_level import save_model
-from src.trainers.common import ce_loss
+from .model import save_model
+from .losses import ce_loss
 
 
-class PretrainTrainer:
-    """Plain CE/SFT training of a single model on Dolly -- no teacher, no KD. Used to
-    cache the SFT baselines (student and teacher, run separately) that distill.py's
-    KD-only student is compared against."""
+class FinetuneTrainer:
+    """Plain CE/SFT training of a single model on Dolly -- no teacher, no KD."""
 
     def __init__(self, args, model, tokenizer, train_ds, val_ds, collator):
         self.args = args
@@ -104,7 +102,7 @@ class PretrainTrainer:
 
         pbar.close()
         self.evaluate()
-        final_dir = os.path.join(args.work_dir, f"{args.APPROACH}_final")
+        final_dir = os.path.join(args.work_dir, f"{args.approach}_final")
         save_model(self.model, self.tokenizer, final_dir)
         self.log(f"Saved final model to {final_dir}")
 
