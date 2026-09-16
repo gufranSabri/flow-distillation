@@ -10,40 +10,16 @@ from tqdm.auto import tqdm
 from transformers import get_linear_schedule_with_warmup
 
 from .model import save_model
-from . import losses as loss_fns
-
-
-def _both_kl(logits, teacher_logits, no_model_batch):
-    return (loss_fns.forward_kl(logits, teacher_logits, no_model_batch)
-            + loss_fns.reverse_kl(logits, teacher_logits, no_model_batch))
-
-
-DISTILL_LOSSES = {
-    "forward_kl": loss_fns.forward_kl,
-    "reverse_kl": loss_fns.reverse_kl,
-    "both": _both_kl,
-}
-
-
-def resolve_distill_loss(name):
-    if name not in DISTILL_LOSSES:
-        raise ValueError(f"Unknown DISTILL_LOSS {name!r}; choose one of {sorted(DISTILL_LOSSES)}")
-    return DISTILL_LOSSES[name]
-
-
-def kd_loss(student_logits, teacher_logits, labels, loss_fn, temperature):
-    # loss_fn reduces over one sequence at a time, so call it per-sequence and average across the batch.
-    s_logits = student_logits.float() / temperature
-    t_logits = teacher_logits.float() / temperature
-    per_seq = torch.stack([
-        loss_fn(s_logits[i:i + 1], t_logits[i:i + 1], {"label": labels[i:i + 1]})
-        for i in range(s_logits.shape[0])
-    ])
-    # Hinton temperature convention: soften both sides, rescale by tau^2 (no-op at the default TEMPERATURE=1.0).
-    return per_seq.mean() * (temperature ** 2)
+from utils.losses import resolve_distill_loss, kd_loss
+from utils.utils import LossAverager, find_latest_checkpoint
 
 
 class WordLevelTrainer:
+    """Main loss is KD (utils.losses.kd_loss): student/teacher next-token distribution
+    matching. A distill approach that adds more than KD returns extra parts from its
+    own _forward -- everything in `parts` is summed into the step loss and logged,
+    main loss included."""
+
     def __init__(self, args, student, teacher, tokenizer, train_ds, val_ds, collator):
         self.args = args
         self.student = student
@@ -77,6 +53,7 @@ class WordLevelTrainer:
 
         self.metrics_path = os.path.join(args.work_dir, "metrics.jsonl")
         self.step = 0
+        self._load_checkpoint_if_exists()
 
     def _log_console(self, message):
         self.log(message)
@@ -96,7 +73,7 @@ class WordLevelTrainer:
         parts = {
             "kd": kd_loss(s_logits, t_logits, labels, self.distill_loss, self.args.TEMPERATURE),
         }
-        loss = parts["kd"]
+        loss = sum(parts.values())
 
         agree = (((s_logits.argmax(-1) == t_logits.argmax(-1)).float() * loss_mask).sum()
                  / loss_mask.sum().clamp(min=1))
@@ -110,14 +87,14 @@ class WordLevelTrainer:
 
         self.student.train()
         self.teacher.eval()
-        running = 0.0
+        running = LossAverager()
         pbar = _bar(total=self.total_steps, desc="train", unit="step", initial=self.step)
 
         for epoch in range(args.TRAIN_EPOCHS):
             for i, batch in enumerate(self.train_loader):
                 loss, parts, _ = self._forward(batch)
                 (loss / accum).backward()
-                running += loss.item()
+                running.update(parts)
 
                 if (i + 1) % accum != 0 and (i + 1) != n_batches:
                     continue
@@ -131,13 +108,14 @@ class WordLevelTrainer:
                 pbar.set_postfix(epoch=epoch, loss=f"{loss.item():.4f}", refresh=False)
 
                 if self.step % args.LOG_EVERY == 0:
-                    avg = running / (accum * args.LOG_EVERY)
-                    detail = "  ".join(f"{k}={v.item():.4f}" for k, v in parts.items())
+                    avg_parts = running.average()
+                    avg_loss = sum(avg_parts.values())
+                    detail = "  ".join(f"{k}={v:.4f}" for k, v in avg_parts.items())
                     self._record({"split": "train", "step": self.step, "epoch": epoch,
-                                  "loss": avg, "lr": self.scheduler.get_last_lr()[0]})
+                                  "loss": avg_loss, **avg_parts, "lr": self.scheduler.get_last_lr()[0]})
                     self._log_console(f"[train] step {self.step}/{self.total_steps}  "
-                                      f"loss={avg:.4f}  {detail}")
-                    running = 0.0
+                                      f"loss={avg_loss:.4f}  {detail}")
+                    running.reset()
 
                 if self.step % args.EVAL_EVERY == 0:
                     self.evaluate()
@@ -153,20 +131,19 @@ class WordLevelTrainer:
     @torch.no_grad()
     def evaluate(self):
         self.student.eval()
-        totals, agrees, n = {}, 0.0, 0
+        totals = LossAverager()
+        agrees, n = 0.0, 0
 
-        for batch in _bar(iterable=self.val_loader, desc="eval", unit="batch",
-                          leave=False):
-            loss, parts, agree = self._forward(batch)
-            totals["loss"] = totals.get("loss", 0.0) + loss.item()
-            for k, v in parts.items():
-                totals[k] = totals.get(k, 0.0) + v.item()
+        for batch in _bar(iterable=self.val_loader, desc="eval", unit="batch", leave=False):
+            _, parts, agree = self._forward(batch)
+            totals.update(parts)
             agrees += agree.item()
             n += 1
 
         n = max(n, 1)
-        row = {"split": "val", "step": self.step, "agreement": agrees / n}
-        row.update({k: v / n for k, v in totals.items()})
+        avg_parts = totals.average()
+        row = {"split": "val", "step": self.step, "loss": sum(avg_parts.values()),
+               **avg_parts, "agreement": agrees / n}
         self._record(row)
         self._log_console("[val] " + "  ".join(
             f"{k}={v:.4f}" for k, v in row.items() if isinstance(v, float)
@@ -186,6 +163,23 @@ class WordLevelTrainer:
         )
         self.log(f"Saved checkpoint to {ckpt_dir}")
         self._prune_checkpoints()
+
+    def _load_checkpoint_if_exists(self):
+        """Resume step/optimizer/scheduler from the latest checkpoint if one exists in
+        work_dir. The student's weights are already loaded from this same checkpoint by
+        the entrypoint (see find_latest_checkpoint in distill.py) before the Trainer is
+        constructed -- this only restores the rest of the training state."""
+        latest_ckpt = find_latest_checkpoint(self.args.work_dir)
+        if latest_ckpt is None:
+            return
+
+        trainer_state_path = os.path.join(latest_ckpt, "trainer_state.pt")
+        self.log(f"Loading trainer state from {latest_ckpt}", console_print=True)
+        trainer_state = torch.load(trainer_state_path, map_location=self.device)
+        self.step = trainer_state["step"]
+        self.optimizer.load_state_dict(trainer_state["optimizer"])
+        self.scheduler.load_state_dict(trainer_state["scheduler"])
+        self.log(f"Resumed from step {self.step}", console_print=True)
 
     def _prune_checkpoints(self):
         limit = self.args.SAVE_TOTAL_LIMIT

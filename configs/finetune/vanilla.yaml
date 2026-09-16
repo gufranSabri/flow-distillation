@@ -1,5 +1,5 @@
 # ── Model ──────────────────────────────────────────────────────────────────────
-FINETUNE_MODE: "full"   # full | lora
+FINETUNE_MODE: "lora"   # full | lora
 
 LORA_R: 16
 LORA_ALPHA: 32

@@ -10,11 +10,17 @@ from tqdm.auto import tqdm
 from transformers import get_linear_schedule_with_warmup
 
 from .model import save_model
-from .losses import ce_loss
+from utils.losses import ce_loss
+from utils.utils import LossAverager, find_latest_checkpoint
 
 
 class FinetuneTrainer:
-    """Plain CE/SFT training of a single model on Dolly -- no teacher, no KD."""
+    """Plain SFT training of a single model on Dolly -- no teacher, no KD.
+
+    Main loss is CE (utils.losses.ce_loss). A future finetune approach that needs
+    more than CE can return extra parts from its own _forward -- everything in
+    `parts` is summed into the step loss and logged, main loss included.
+    """
 
     def __init__(self, args, model, tokenizer, train_ds, val_ds, collator):
         self.args = args
@@ -46,6 +52,7 @@ class FinetuneTrainer:
 
         self.metrics_path = os.path.join(args.work_dir, "metrics.jsonl")
         self.step = 0
+        self._load_checkpoint_if_exists()
 
     def _log_console(self, message):
         self.log(message)
@@ -58,8 +65,9 @@ class FinetuneTrainer:
         loss_mask = (labels != -100).float()
 
         out = self.model(input_ids=input_ids, attention_mask=attn_mask)
-        loss = ce_loss(out.logits, labels, loss_mask)
-        return loss, {"ce": loss}
+        parts = {"ce": ce_loss(out.logits, labels, loss_mask)}
+        loss = sum(parts.values())
+        return loss, parts
 
     def train(self):
         args = self.args
@@ -68,14 +76,14 @@ class FinetuneTrainer:
         self.log(f"Training {self.total_steps} steps (ce-only, mode={args.FINETUNE_MODE})")
 
         self.model.train()
-        running = 0.0
+        running = LossAverager()
         pbar = _bar(total=self.total_steps, desc="train", unit="step", initial=self.step)
 
         for epoch in range(args.TRAIN_EPOCHS):
             for i, batch in enumerate(self.train_loader):
                 loss, parts = self._forward(batch)
                 (loss / accum).backward()
-                running += loss.item()
+                running.update(parts)
 
                 if (i + 1) % accum != 0 and (i + 1) != n_batches:
                     continue
@@ -89,11 +97,14 @@ class FinetuneTrainer:
                 pbar.set_postfix(epoch=epoch, loss=f"{loss.item():.4f}", refresh=False)
 
                 if self.step % args.LOG_EVERY == 0:
-                    avg = running / (accum * args.LOG_EVERY)
+                    avg_parts = running.average()
+                    avg_loss = sum(avg_parts.values())
+                    detail = "  ".join(f"{k}={v:.4f}" for k, v in avg_parts.items())
                     self._record({"split": "train", "step": self.step, "epoch": epoch,
-                                  "loss": avg, "lr": self.scheduler.get_last_lr()[0]})
-                    self._log_console(f"[train] step {self.step}/{self.total_steps}  loss={avg:.4f}")
-                    running = 0.0
+                                  "loss": avg_loss, **avg_parts, "lr": self.scheduler.get_last_lr()[0]})
+                    self._log_console(f"[train] step {self.step}/{self.total_steps}  "
+                                      f"loss={avg_loss:.4f}  {detail}")
+                    running.reset()
 
                 if self.step % args.EVAL_EVERY == 0:
                     self.evaluate()
@@ -109,15 +120,14 @@ class FinetuneTrainer:
     @torch.no_grad()
     def evaluate(self):
         self.model.eval()
-        total_loss, n = 0.0, 0
+        totals = LossAverager()
 
         for batch in _bar(iterable=self.val_loader, desc="eval", unit="batch", leave=False):
-            loss, _ = self._forward(batch)
-            total_loss += loss.item()
-            n += 1
+            _, parts = self._forward(batch)
+            totals.update(parts)
 
-        n = max(n, 1)
-        row = {"split": "val", "step": self.step, "loss": total_loss / n}
+        avg_parts = totals.average()
+        row = {"split": "val", "step": self.step, "loss": sum(avg_parts.values()), **avg_parts}
         self._record(row)
         self._log_console("[val] " + "  ".join(f"{k}={v:.4f}" for k, v in row.items() if isinstance(v, float)))
 
@@ -135,6 +145,23 @@ class FinetuneTrainer:
         )
         self.log(f"Saved checkpoint to {ckpt_dir}")
         self._prune_checkpoints()
+
+    def _load_checkpoint_if_exists(self):
+        """Resume step/optimizer/scheduler from the latest checkpoint if one exists in
+        work_dir. The model's weights are already loaded from this same checkpoint by
+        the entrypoint (see find_latest_checkpoint in finetune.py) before the Trainer
+        is constructed -- this only restores the rest of the training state."""
+        latest_ckpt = find_latest_checkpoint(self.args.work_dir)
+        if latest_ckpt is None:
+            return
+
+        trainer_state_path = os.path.join(latest_ckpt, "trainer_state.pt")
+        self.log(f"Loading trainer state from {latest_ckpt}", console_print=True)
+        trainer_state = torch.load(trainer_state_path, map_location=self.device)
+        self.step = trainer_state["step"]
+        self.optimizer.load_state_dict(trainer_state["optimizer"])
+        self.scheduler.load_state_dict(trainer_state["scheduler"])
+        self.log(f"Resumed from step {self.step}", console_print=True)
 
     def _prune_checkpoints(self):
         limit = self.args.SAVE_TOTAL_LIMIT

@@ -21,11 +21,12 @@ configs/
   finetune/<approach>.yaml                per-approach finetune config (e.g. vanilla.yaml)
   distill/<approach>.yaml                 per-approach distill config (e.g. word_level.yaml)
 src/
-  finetune/<approach>/                    model.py + trainer.py + losses.py trio
-  distill/<approach>/                     model.py + trainer.py + losses.py trio
+  finetune/<approach>/                    model.py + trainer.py trio (vanilla)
+  distill/<approach>/                     model.py + trainer.py trio (word_level)
 utils/
+  losses.py                               loss functions shared by every trio (ce_loss, kd_loss, ...)
   data.py                                 Dolly loading/tokenization, shared by train + eval
-  logger.py, utils.py                     logging, RNG seeding, CLI-override parsing
+  logger.py, utils.py                     logging, RNG seeding, CLI-override parsing, LossAverager
 dolly_eval/                               MiniLLM eval-suite loaders + generation/scoring
 *.slurm                                   Slurm job scripts (one per entrypoint)
 scripts/install.sh                        pip installs used by the .slurm scripts
@@ -136,7 +137,6 @@ approach (say a new finetuning method `src/finetune/my_approach/`):
      `save_model` should write out something `AutoModelForCausalLM.from_pretrained`
      can reload standalone (see `src/finetune/vanilla/model.py` for the LoRA
      merge-before-save pattern).
-   - `losses.py` — your loss function(s).
    - `trainer.py` — a `Trainer` class (name it whatever, re-export it as `Trainer` in
      `__init__.py`) with the signature the entrypoint calls it with:
      - finetune: `Trainer(args, model, tokenizer, train_ds, val_ds, collator)`
@@ -144,8 +144,8 @@ approach (say a new finetuning method `src/finetune/my_approach/`):
      It needs a `.train()` method. Look at `src/finetune/vanilla/trainer.py` or
      `src/distill/word_level/trainer.py` as a template — the boilerplate (DataLoader
      setup, optimizer/scheduler, grad accumulation, checkpointing with
-     `SAVE_TOTAL_LIMIT` pruning, `metrics.jsonl` logging, tqdm progress bar) is
-     copy-paste between them; only `_forward` and the loss really differ.
+     `SAVE_TOTAL_LIMIT` pruning, `metrics.jsonl`/console logging via `LossAverager`,
+     tqdm progress bar) is copy-paste between them; only `_forward` really differs.
    - `__init__.py`:
      ```python
      from .model import load_model, save_model
@@ -153,6 +153,17 @@ approach (say a new finetuning method `src/finetune/my_approach/`):
 
      __all__ = ["load_model", "save_model", "Trainer"]
      ```
+
+   No `losses.py`: every trio composes its loss from `utils/losses.py` instead of
+   defining its own. `_forward` should return `(loss, parts, ...)` where `parts` is a
+   `{name: loss_tensor}` dict and `loss = sum(parts.values())` — finetune's `parts`
+   should always include `"ce"` (`utils.losses.ce_loss`, the main loss every finetune
+   trio uses), distill's should always include `"kd"` (`utils.losses.kd_loss`, the main
+   loss every distill trio uses). If your approach needs more than that (a second loss
+   term on top of the main one), just add another key to `parts` — the trainer sums it
+   into the backward loss and both the console and `metrics.jsonl` log every component
+   automatically. Only add a new function to `utils/losses.py` if the loss you need
+   genuinely isn't there yet.
 
 2. **Register it** in `src/finetune/__init__.py` (or `src/distill/__init__.py`):
    ```python
@@ -174,7 +185,10 @@ approach (say a new finetuning method `src/finetune/my_approach/`):
 If you want the new approach's student/teacher loading to differ from an existing
 trio, write your own `model.py`; if it doesn't (as `src/distill/word_level` doesn't),
 just import and re-export another trio's `load_model`/`save_model` like
-`src/distill/word_level/model.py` does.
+`src/distill/word_level/model.py` does. Likewise, if your approach needs a reusable
+model component (not just a loss), put it in `utils/` rather than inside the trio's
+own package — `src/<finetune|distill>/<approach>/` should stay the thin
+`model.py`/`trainer.py` glue that wires shared pieces from `utils/` into a training loop.
 
 ## Data pipeline
 

@@ -6,7 +6,7 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from utils.logger import Logger, log_config, log_model, log_dataset_sizes
-from utils.utils import set_rng_state, parse_cli_overrides
+from utils.utils import set_rng_state, parse_cli_overrides, find_latest_checkpoint
 from utils.data import build_dolly_datasets
 
 from src.distill import get_approach
@@ -41,8 +41,16 @@ def prep_model_comps(args, approach):
         p.requires_grad = False
     teacher.eval()
 
-    args.logger(f"Loading student ({args.FINETUNE_MODE}): {args.student_model} …")
-    student = approach.load_model(args, args.student_model).to(args.device)
+    # resume from the latest checkpoint's weights if one exists, instead of re-initializing
+    # from --student-model; Trainer._load_checkpoint_if_exists separately resumes
+    # step/optimizer/scheduler. The teacher is unaffected -- it's always --teacher-model.
+    resume_ckpt = find_latest_checkpoint(args.work_dir)
+    student_source = resume_ckpt or args.student_model
+    if resume_ckpt:
+        args.logger(f"Resuming student weights from {resume_ckpt}", console_print=True)
+
+    args.logger(f"Loading student ({args.FINETUNE_MODE}): {student_source} …")
+    student = approach.load_model(args, student_source).to(args.device)
 
     args.logger(f"  Teacher hidden dim {teacher.config.hidden_size} / "
                 f"student hidden dim {student.config.hidden_size}")
@@ -80,8 +88,18 @@ def main(args, approach):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        epilog="Any key from configs/common.yaml or configs/distill/<approach>.yaml can "
-               "also be overridden, e.g. --DISTILL_LOSS both --TEMPERATURE 2.0.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Any key from configs/common.yaml or configs/distill/<approach>.yaml can also be
+overridden, e.g. --DISTILL_LOSS both --TEMPERATURE 2.0.
+
+Examples
+--------
+# word-level KD (student/teacher next-token distribution matching)
+python distill.py --student-model ~/scratch/distillation/finetuned/Qwen2.5-0.5B/vanilla_final \\
+    --teacher-model ~/scratch/distillation/finetuned/Qwen2.5-3B/vanilla_final \\
+    --approach word_level --work-dir word_level_run
+""",
     )
     parser.add_argument("--student-model", required=True,
                          help="hub id or path (e.g. a finetune.py SFT checkpoint) for the student")

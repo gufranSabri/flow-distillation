@@ -1,8 +1,7 @@
-from . import fm_lora, vanilla
+from . import vanilla
 
 APPROACHES = {
     "vanilla": vanilla,
-    "fm_lora": fm_lora,
 }
 
 

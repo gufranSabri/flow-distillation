@@ -5,7 +5,7 @@ import argparse
 from transformers import AutoTokenizer
 
 from utils.logger import Logger, log_config, log_model, log_dataset_sizes
-from utils.utils import set_rng_state, parse_cli_overrides
+from utils.utils import set_rng_state, parse_cli_overrides, find_latest_checkpoint
 from utils.data import build_dolly_datasets
 
 from src.finetune import get_approach
@@ -30,9 +30,16 @@ def main(args, approach):
     args.logger(f"Work dir: {args.work_dir}", console_print=True)
     log_config(args.logger, args)
 
-    args.logger(f"Loading tokenizer/model ({args.FINETUNE_MODE}): {args.model} …")
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-    model = approach.load_model(args, args.model).to(args.device)
+    # resume from the latest checkpoint's weights if one exists, instead of re-initializing
+    # from --model; Trainer._load_checkpoint_if_exists separately resumes step/optimizer/scheduler
+    resume_ckpt = find_latest_checkpoint(args.work_dir)
+    model_source = resume_ckpt or args.model
+    if resume_ckpt:
+        args.logger(f"Resuming model weights from {resume_ckpt}", console_print=True)
+
+    args.logger(f"Loading tokenizer/model ({args.FINETUNE_MODE}): {model_source} …")
+    tokenizer = AutoTokenizer.from_pretrained(model_source, trust_remote_code=True)
+    model = approach.load_model(args, model_source).to(args.device)
     log_model(args.logger, model, "model")
 
     train_ds, val_ds, collator = build_dolly_datasets(args, tokenizer)
@@ -56,16 +63,6 @@ python finetune.py --model Qwen/Qwen2.5-0.5B --approach vanilla \\
     --work-dir finetuned/Qwen2.5-0.5B --TRAIN_EPOCHS 3
 python benchmark.py --model ~/scratch/distillation/finetuned/Qwen2.5-0.5B/vanilla_final \\
     --work-dir ./work_dir/Qwen2.5-0.5B
-
-# flow-matching LoRA (docs/flow-matching-lora.md)
-python finetune.py --model Qwen/Qwen2.5-0.5B --approach fm_lora \\
-    --work-dir finetuned/Qwen2.5-0.5B_fm --TRAIN_EPOCHS 3
-python benchmark.py --model ~/scratch/distillation/finetuned/Qwen2.5-0.5B_fm/fm_lora_final \\
-    --work-dir ./work_dir/Qwen2.5-0.5B_fm
-
-# fm_lora smoke test (tiny sample counts, frequent logging)
-python finetune.py --model Qwen/Qwen2.5-0.5B --approach fm_lora --work-dir fm_smoke \\
-    --MAX_TRAIN_SAMPLES 32 --MAX_VAL_SAMPLES 8 --LOG_EVERY 1 --EVAL_EVERY 5 --SAVE_EVERY 1000
 """,
     )
     parser.add_argument("--model", required=True,

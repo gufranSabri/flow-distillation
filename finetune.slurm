@@ -27,16 +27,12 @@ export HF_HUB_DISABLE_XET=1
 export TF_CPP_MIN_LOG_LEVEL=3
 export HF_HOME=/home/ahmedubc/scratch/hf_cache
 
-# SFT baselines (no KD): the student and teacher, each fine-tuned directly on Dolly
-# ground truth, cached to compare distill.py's KD-only student against.
 MODELS=(
-    # "Qwen/Qwen2.5-0.5B"
-    # "Qwen/Qwen2.5-3B"
+    "Qwen/Qwen2.5-0.5B"
+    "Qwen/Qwen2.5-3B"
 )
 
-# Which src/finetune/<approach> trio to train with: vanilla | fm_lora.
-# vanilla keeps the bare <model> dir name so distill.slurm's paths stay valid;
-# other approaches get suffixed so runs don't overwrite each other.
+# Which src/finetune/<approach> trio to train with: vanilla.
 APPROACH="${1:-vanilla}"
 
 for MODEL in "${MODELS[@]}"; do
@@ -56,17 +52,3 @@ for MODEL in "${MODELS[@]}"; do
         --model ~/scratch/distillation/finetuned/"$SAFE_NAME"/"${APPROACH}"_final \
         --work-dir ./work_dir/"$SAFE_NAME"
 done
-
-
-# ---------------------
-
-python finetune.py \
-    --model "Qwen/Qwen2.5-0.5B" \
-    --work-dir "finetuned/fm_lora" \
-    --approach "fm_lora" \
-    --TRAIN_EPOCHS 3
-
-# Benchmarking output stays in the repo's own work_dir, not WORK_DIR_ROOT.
-python benchmark.py \
-    --model ~/scratch/distillation/finetuned/fm_lora/fm_lora_final \
-    --work-dir ./work_dir/fm_lora

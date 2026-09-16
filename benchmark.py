@@ -8,20 +8,13 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
 def load_model(path, device, dtype):
-    """Loads a local checkpoint or a hub id; most trainer checkpoints are plain HF models
-    (LoRA merged). FM-LoRA cannot merge its adapter, so those checkpoints carry the flow
-    in a side file and must be rebuilt through their own loader -- otherwise
-    from_pretrained would silently evaluate the unadapted base model."""
+    """Loads a local checkpoint or a hub id; trainer checkpoints are plain HF models
+    (LoRA merged)."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    from src.finetune.fm_lora.model import is_fm_lora_checkpoint, load_fm_lora_checkpoint
 
-    if is_fm_lora_checkpoint(path):
-        print(f"Detected FM-LoRA checkpoint; rebuilding flow from {path}")
-        model = load_fm_lora_checkpoint(path, device=device, dtype=dtype)
-    else:
-        model = AutoModelForCausalLM.from_pretrained(
-            path, dtype=dtype, trust_remote_code=True,
-        ).to(device)
+    model = AutoModelForCausalLM.from_pretrained(
+        path, dtype=dtype, trust_remote_code=True,
+    ).to(device)
     model.eval()
 
     tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
