@@ -1,0 +1,25 @@
+# See docs/fm_lora.md. --teacher-model/--student-model must be Stage-1 SFT LoRA
+# checkpoints from finetune.py --approach vanilla --FINETUNE_MODE lora, with the same
+# LORA_TARGET_MODULES and LORA_R for both models. Each of those target modules that
+# lives in the last decoder block (e.g. o_proj) is swapped for an fm_lora site in
+# flow_matching mode -- lm_head is never touched.
+
+# ── Distillation ───────────────────────────────────────────────────────────────
+distillation_mode: flow_matching   # flow_matching | standard
+DISTILL_LOSS: "reverse_kl"         # forward_kl | reverse_kl | both
+TEMPERATURE: 1.0
+
+# ── flow_matching mode only ───────────────────────────────────────────────────
+num_euler_steps: 8       # inference-time integration steps
+FM_VELOCITY_HIDDEN: 128  # v_theta hidden width
+
+# ── Training ───────────────────────────────────────────────────────────────────
+LR: 1.0e-4
+WARMUP_RATIO: 0.03
+WEIGHT_DECAY: 0.0
+MAX_GRAD_NORM: 1.0
+
+LOG_EVERY: 10
+EVAL_EVERY: 200
+SAVE_EVERY: 200
+SAVE_TOTAL_LIMIT: 3

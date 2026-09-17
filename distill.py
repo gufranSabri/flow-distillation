@@ -31,15 +31,21 @@ def prep_model_comps(args, approach):
     check_same_vocab(args, student_tokenizer, tokenizer)
 
     args.logger(f"Loading teacher: {args.teacher_model} …")
-    teacher = AutoModelForCausalLM.from_pretrained(
-        args.teacher_model,
-        dtype=torch.bfloat16,
-        trust_remote_code=True,
-    ).to(args.device)
-    teacher.config.use_cache = False
-    for p in teacher.parameters():
-        p.requires_grad = False
-    teacher.eval()
+    if hasattr(approach, "load_teacher"):
+        # an approach that needs more than the teacher's output distribution (e.g.
+        # fm_lora, which reads the teacher's own last-layer LoRA projection) loads it
+        # its own way instead of as a plain HF model
+        teacher = approach.load_teacher(args, args.teacher_model)
+    else:
+        teacher = AutoModelForCausalLM.from_pretrained(
+            args.teacher_model,
+            dtype=torch.bfloat16,
+            trust_remote_code=True,
+        ).to(args.device)
+        teacher.config.use_cache = False
+        for p in teacher.parameters():
+            p.requires_grad = False
+        teacher.eval()
 
     # resume from the latest checkpoint's weights if one exists, instead of re-initializing
     # from --student-model; Trainer._load_checkpoint_if_exists separately resumes
@@ -49,7 +55,7 @@ def prep_model_comps(args, approach):
     if resume_ckpt:
         args.logger(f"Resuming student weights from {resume_ckpt}", console_print=True)
 
-    args.logger(f"Loading student ({args.FINETUNE_MODE}): {student_source} …")
+    args.logger(f"Loading student ({args.approach}): {student_source} …")
     student = approach.load_model(args, student_source).to(args.device)
 
     args.logger(f"  Teacher hidden dim {teacher.config.hidden_size} / "
@@ -99,6 +105,12 @@ Examples
 python distill.py --student-model ~/scratch/distillation/finetuned/Qwen2.5-0.5B/vanilla_final \\
     --teacher-model ~/scratch/distillation/finetuned/Qwen2.5-3B/vanilla_final \\
     --approach word_level --work-dir word_level_run
+
+# Stage 2 of docs/fm_lora.md: both --student-model/--teacher-model must be Stage-1
+# checkpoints with the same LORA_TARGET_MODULES and LORA_R
+python distill.py --student-model ~/scratch/distillation/finetuned/Qwen2.5-0.5B/vanilla_final \\
+    --teacher-model ~/scratch/distillation/finetuned/Qwen2.5-3B/vanilla_final \\
+    --approach fm_lora --work-dir fm_lora_run
 """,
     )
     parser.add_argument("--student-model", required=True,

@@ -39,15 +39,23 @@ for MODEL in "${MODELS[@]}"; do
     SAFE_NAME="${MODEL//\//_}"
     [ "$APPROACH" = "vanilla" ] || SAFE_NAME="${SAFE_NAME}_${APPROACH}"
 
-    # Saved under WORK_DIR_ROOT/finetuned/<model> (configs/common.yaml resolves
-    # --work-dir under WORK_DIR_ROOT unless given an explicit path).
     python finetune.py \
         --model "$MODEL" \
         --work-dir "finetuned/$SAFE_NAME" \
         --approach "$APPROACH" \
         --TRAIN_EPOCHS 3
+done
 
-    # Benchmarking output stays in the repo's own work_dir, not WORK_DIR_ROOT.
+
+
+MODELS=(
+    "Qwen/Qwen2.5-0.5B"
+    "Qwen/Qwen2.5-3B"
+)
+for MODEL in "${MODELS[@]}"; do
+    SAFE_NAME="${MODEL//\//_}"
+    [ "$APPROACH" = "vanilla" ] || SAFE_NAME="${SAFE_NAME}_${APPROACH}"
+
     python benchmark.py \
         --model ~/scratch/distillation/finetuned/"$SAFE_NAME"/"${APPROACH}"_final \
         --work-dir ./work_dir/"$SAFE_NAME"
