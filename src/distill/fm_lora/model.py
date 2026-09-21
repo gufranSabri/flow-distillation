@@ -99,11 +99,13 @@ def load_teacher(args, stage1_dir):
 
 
 def load_model(args, stage1_dir):
-    """Student: Stage-1 LoRA, all layers trainable. In flow_matching mode, every
-    target-module LoraLayer in the last decoder block is replaced by an FMLoraSite
-    (A_s/B_s kept from Stage 1, trainable, plus a new v_theta); every other layer's
-    LoRA is untouched, plain trainable peft LoRA. In standard mode nothing is swapped
-    -- the last layer's LoRA stays normal, same as every other layer.
+    """Student: Stage-1 LoRA, only the LoRA (+ fm_lora sites, added below) trainable --
+    the base stays frozen, exactly as _load_lora_model's is_trainable=True already set
+    it up. In flow_matching mode, every target-module LoraLayer in the last decoder
+    block is replaced by an FMLoraSite (A_s/B_s kept from Stage 1, trainable, plus a
+    new v_theta); every other layer's LoRA is untouched, plain trainable peft LoRA. In
+    standard mode nothing is swapped -- the last layer's LoRA stays normal, same as
+    every other layer.
 
     If stage1_dir is itself an fm_lora checkpoint (i.e. this is a resume -- see
     distill.py's find_latest_checkpoint/model_source), each site's v_theta is restored
@@ -111,8 +113,6 @@ def load_model(args, stage1_dir):
     continues Stage 2's flow-matching progress rather than silently discarding it.
     """
     model = _load_lora_model(stage1_dir, args.device, trainable=True)
-    for p in model.parameters():
-        p.requires_grad = True
 
     if args.distillation_mode == "flow_matching":
         target_modules = model.peft_config[ADAPTER_NAME].target_modules

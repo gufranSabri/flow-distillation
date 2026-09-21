@@ -12,6 +12,8 @@ TEMPERATURE: 1.0
 # ── flow_matching mode only ───────────────────────────────────────────────────
 num_euler_steps: 8       # inference-time integration steps
 FM_VELOCITY_HIDDEN: 128  # v_theta hidden width
+FM_LOSS_WEIGHT: 1.0      # weight on the flow-matching loss (fm) in loss = FM_LOSS_WEIGHT * fm + KL_LOSS_WEIGHT * kl
+KL_LOSS_WEIGHT: 10.0      # weight on the KD loss (kl) in the same sum
 
 # ── Training ───────────────────────────────────────────────────────────────────
 LR: 1.0e-4

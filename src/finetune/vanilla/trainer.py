@@ -1,3 +1,4 @@
+import itertools
 import json
 import math
 import os
@@ -29,9 +30,13 @@ class FinetuneTrainer:
         self.device = args.device
         self.log = args.logger
 
+        # own generator, reseeded per epoch in train(), so epoch N's shuffle order is the
+        # same whether or not the run was resumed (the skip-on-resume below relies on it)
+        self.shuffle_gen = torch.Generator()
         self.train_loader = DataLoader(
             train_ds, batch_size=args.PER_DEVICE_TRAIN_BATCH_SIZE,
-            shuffle=True, collate_fn=collator, num_workers=2, pin_memory=True,
+            shuffle=True, generator=self.shuffle_gen,
+            collate_fn=collator, num_workers=2, pin_memory=True,
         )
         self.val_loader = DataLoader(
             val_ds, batch_size=args.PER_DEVICE_EVAL_BATCH_SIZE,
@@ -79,8 +84,23 @@ class FinetuneTrainer:
         running = LossAverager()
         pbar = _bar(total=self.total_steps, desc="train", unit="step", initial=self.step)
 
-        for epoch in range(args.TRAIN_EPOCHS):
-            for i, batch in enumerate(self.train_loader):
+        # resuming: self.step/optimizer/scheduler already reflect the checkpoint, but a
+        # fresh `for epoch ... enumerate(self.train_loader)` would restart at batch 0
+        # regardless, redoing already-trained data and overshooting total_steps (and,
+        # since the scheduler was built for total_steps, training at LR=0 past it).
+        # Skip exactly the batches already consumed so training picks up where it left off.
+        consumed_batches = self.step * accum
+        start_epoch, start_batch = divmod(consumed_batches, n_batches)
+
+        for epoch in range(start_epoch, args.TRAIN_EPOCHS):
+            self.shuffle_gen.manual_seed(args.seed + epoch)
+            batches = enumerate(self.train_loader)
+            skip = start_batch if epoch == start_epoch else 0
+            if skip:
+                self._log_console(f"Resuming epoch {epoch}: skipping {skip} already-trained batches")
+                batches = itertools.islice(batches, skip, None)
+
+            for i, batch in batches:
                 loss, parts = self._forward(batch)
                 (loss / accum).backward()
                 running.update(parts)

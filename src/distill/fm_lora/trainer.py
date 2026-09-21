@@ -27,7 +27,8 @@ class FMLoRATrainer:
     A_t(x_t), instead of a direct A_s/B_s composition of that projection's input.
     Every site fires this during a single student forward pass (its loss recorded as
     a side effect); see _forward_flow_matching for the exact steps (numbered per the
-    spec), run once per site.
+    spec), run once per site. The two components are combined as
+    FM_LOSS_WEIGHT * fm + KL_LOSS_WEIGHT * kl (both 1.0 by default).
     """
 
     def __init__(self, args, student, teacher, tokenizer, train_ds, val_ds, collator):
@@ -48,9 +49,13 @@ class FMLoRATrainer:
         else:
             self.teacher_last = None
 
+        # own generator, reseeded per epoch in train(), so epoch N's shuffle order is the
+        # same whether or not the run was resumed (the skip-on-resume below relies on it)
+        self.shuffle_gen = torch.Generator()
         self.train_loader = DataLoader(
             train_ds, batch_size=args.PER_DEVICE_TRAIN_BATCH_SIZE,
-            shuffle=True, collate_fn=collator, num_workers=2, pin_memory=True,
+            shuffle=True, generator=self.shuffle_gen,
+            collate_fn=collator, num_workers=2, pin_memory=True,
         )
         self.val_loader = DataLoader(
             val_ds, batch_size=args.PER_DEVICE_EVAL_BATCH_SIZE,
@@ -134,7 +139,7 @@ class FMLoRATrainer:
         l_fm = sum(site.l_fm for site in self.student.fm_sites.values())
         l_kl = kd_loss(s_logits, t_logits, labels, self.distill_loss, self.args.TEMPERATURE)
 
-        parts = {"fm": l_fm, "kl": l_kl}
+        parts = {"fm": self.args.FM_LOSS_WEIGHT * l_fm, "kl": self.args.KL_LOSS_WEIGHT * l_kl}
         return sum(parts.values()), parts, s_logits, t_logits
 
     def _forward(self, batch):
@@ -172,6 +177,7 @@ class FMLoRATrainer:
         start_epoch, start_batch = divmod(consumed_batches, n_batches)
 
         for epoch in range(start_epoch, args.TRAIN_EPOCHS):
+            self.shuffle_gen.manual_seed(args.seed + epoch)
             batches = enumerate(self.train_loader)
             skip = start_batch if epoch == start_epoch else 0
             if skip:

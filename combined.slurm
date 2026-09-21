@@ -41,20 +41,20 @@ TEACHER_SAFE_NAME="${TEACHER_MODEL_ID//\//_}"
 LORA_TARGET_MODULES='["q_proj","k_proj","v_proj","o_proj"]'
 
 # ── Stage 1: vanilla SFT (student + teacher), then benchmark each ──────────────────
-for MODEL in "$STUDENT_MODEL_ID" "$TEACHER_MODEL_ID"; do
-    SAFE_NAME="${MODEL//\//_}"
+#for MODEL in "$STUDENT_MODEL_ID" "$TEACHER_MODEL_ID"; do
+ #   SAFE_NAME="${MODEL//\//_}"
 
-    python finetune.py \
-        --model "$MODEL" \
-        --work-dir "finetuned/$SAFE_NAME" \
-        --approach vanilla \
-        --TRAIN_EPOCHS 5 \
-        --LORA_TARGET_MODULES "$LORA_TARGET_MODULES"
+  #  python finetune.py \
+   #     --model "$MODEL" \
+    #    --work-dir "finetuned/$SAFE_NAME" \
+     #   --approach vanilla \
+      #  --TRAIN_EPOCHS 5 \
+       # --LORA_TARGET_MODULES "$LORA_TARGET_MODULES"
 
-    python benchmark.py \
-        --model ~/scratch/distillation/finetuned/"$SAFE_NAME"/vanilla_final \
-        --work-dir ./work_dir/"$SAFE_NAME"
-done
+   # python benchmark.py \
+    #    --model ~/scratch/distillation/finetuned/"$SAFE_NAME"/vanilla_final \
+     #   --work-dir ./work_dir/"$SAFE_NAME"
+#done
 
 # ── Stage 2: fm_lora distillation on top of the Stage-1 checkpoints, then benchmark ─
 STUDENT_MODEL="$HOME/scratch/distillation/finetuned/$STUDENT_SAFE_NAME/vanilla_final"
