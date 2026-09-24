@@ -32,8 +32,7 @@ def prep_model_comps(args, approach):
 
     args.logger(f"Loading teacher: {args.teacher_model} …")
     if hasattr(approach, "load_teacher"):
-        # an approach that needs more than the teacher's output distribution (e.g.
-        # fm_lora, which reads the teacher's own last-layer LoRA projection) loads it
+        # an approach that needs more than the teacher's output distribution loads it
         # its own way instead of as a plain HF model
         teacher = approach.load_teacher(args, args.teacher_model)
     else:
@@ -105,12 +104,6 @@ Examples
 python distill.py --student-model ~/scratch/distillation/finetuned/Qwen2.5-0.5B/vanilla_final \\
     --teacher-model ~/scratch/distillation/finetuned/Qwen2.5-3B/vanilla_final \\
     --approach word_level --work-dir word_level_run
-
-# Stage 2 of docs/fm_lora.md: both --student-model/--teacher-model must be Stage-1
-# checkpoints with the same LORA_TARGET_MODULES and LORA_R
-python distill.py --student-model ~/scratch/distillation/finetuned/Qwen2.5-0.5B/vanilla_final \\
-    --teacher-model ~/scratch/distillation/finetuned/Qwen2.5-3B/vanilla_final \\
-    --approach fm_lora --work-dir fm_lora_run
 """,
     )
     parser.add_argument("--student-model", required=True,

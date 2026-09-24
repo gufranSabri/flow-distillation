@@ -37,7 +37,7 @@ TEACHER_MODEL="$HOME/scratch/distillation/finetuned/${TEACHER_MODEL_ID//\//_}/va
 
 # -----------------------------------------------------------------------------------------------------------------------------
 RUN_NAME="${1:-word_level_$(date +%d_%H_%M_%S)}"
-# RUN_NAME="word_level_20_13_11_49"
+RUN_NAME="word_level_21_02_13_41"
 
 python distill.py \
     --student-model "$STUDENT_MODEL" \
@@ -49,19 +49,3 @@ python distill.py \
 python benchmark.py \
     --model ~/scratch/distillation/"$RUN_NAME"/word_level_final \
     --work-dir ./work_dir/"$RUN_NAME"
-
-
-# -----------------------------------------------------------------------------------------------------------------------------
-RUN_NAME="${1:-fm_lora_$(date +%d_%H_%M_%S)}"
-# RUN_NAME="fm_lora_20_04_12_50"
-
-python distill.py \
-    --student-model "$STUDENT_MODEL" \
-    --teacher-model "$TEACHER_MODEL" \
-    --work-dir "$RUN_NAME" \
-    --approach fm_lora \
-    --TRAIN_EPOCHS 10 
-
-python benchmark.py \
-    --model ~/scratch/distillation/"$RUN_NAME"/fm_lora_final \
-    --work-dir ./work_dir/"$RUN_NAME" --tasks dolly,self_inst,vicuna,s_ni

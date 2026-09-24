@@ -9,20 +9,13 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 def load_model(path, device, dtype):
     """Loads a local checkpoint or a hub id; trainer checkpoints are plain HF models
-    (LoRA merged), except fm_lora's flow_matching mode, whose last layer isn't a fixed
-    weight matrix -- see src/distill/fm_lora/generate.py."""
-    from transformers import AutoTokenizer
+    (LoRA merged)."""
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    from src.distill.fm_lora.generate import is_fm_lora_checkpoint, load_for_generation
-
-    if is_fm_lora_checkpoint(path):
-        model = load_for_generation(path, device=device, dtype=dtype)
-    else:
-        from transformers import AutoModelForCausalLM
-        model = AutoModelForCausalLM.from_pretrained(
-            path, dtype=dtype, trust_remote_code=True,
-        ).to(device)
-        model.eval()
+    model = AutoModelForCausalLM.from_pretrained(
+        path, dtype=dtype, trust_remote_code=True,
+    ).to(device)
+    model.eval()
 
     tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
     if tokenizer.pad_token is None:

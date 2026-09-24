@@ -1,9 +1,7 @@
 from . import word_level
-from . import fm_lora
 
 APPROACHES = {
     "word_level": word_level,
-    "fm_lora": fm_lora,
 }
 
 

@@ -58,9 +58,7 @@ overridden, e.g. --LR 1e-4 --WEIGHT_DECAY 0.01.
 
 Examples
 --------
-# vanilla SFT (LoRA or full, per configs/finetune/vanilla.yaml). Also Stage 1 of
-# docs/fm_lora.md -- no special target modules needed, LoRA is applied uniformly to
-# every layer including the last, same as any other run.
+# vanilla SFT (LoRA or full, per configs/finetune/vanilla.yaml)
 python finetune.py --model Qwen/Qwen2.5-0.5B --approach vanilla \\
     --work-dir finetuned/Qwen2.5-0.5B --TRAIN_EPOCHS 3
 python benchmark.py --model ~/scratch/distillation/finetuned/Qwen2.5-0.5B/vanilla_final \\

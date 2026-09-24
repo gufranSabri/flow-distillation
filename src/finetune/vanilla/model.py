@@ -35,9 +35,8 @@ def save_model(model, tokenizer, save_dir):
 
     If model is a PEFT model, the unmerged adapter is also saved (to save_dir/adapter/,
     via PeftModel.save_pretrained) so a later stage that needs the separate LoRA
-    matrices -- not just their fused effect on the base weights -- can reload them with
-    PeftModel.from_pretrained (see src/distill/fm_lora/model.py, which needs a Stage-1
-    checkpoint's A/B intact rather than merged into the base).
+    matrices -- not just their fused effect on the base weights -- can reload them
+    with PeftModel.from_pretrained.
     """
     if hasattr(model, "peft_config"):
         model.save_pretrained(os.path.join(save_dir, "adapter"))
