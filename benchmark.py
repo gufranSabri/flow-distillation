@@ -9,13 +9,20 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 def load_model(path, device, dtype):
     """Loads a local checkpoint or a hub id; trainer checkpoints are plain HF models
-    (LoRA merged)."""
+    (LoRA merged), except dobi's, whose flow head isn't a plain HF model -- see
+    src/distill/dobi/model.py (its frozen student is bf16 and the flow runs in fp32,
+    as in training, regardless of --dtype)."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    model = AutoModelForCausalLM.from_pretrained(
-        path, dtype=dtype, trust_remote_code=True,
-    ).to(device)
-    model.eval()
+    from src.distill.dobi.model import is_dobi_checkpoint, load_checkpoint as load_dobi
+
+    if is_dobi_checkpoint(path):
+        model = load_dobi(path).to(device).eval()
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            path, dtype=dtype, trust_remote_code=True,
+        ).to(device)
+        model.eval()
 
     tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
     if tokenizer.pad_token is None:

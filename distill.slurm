@@ -10,7 +10,7 @@
 #SBATCH --gpus-per-node=l40s:1
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=24G
-#SBATCH --time=1-00:00:00
+#SBATCH --time=12:00:00
 
 # SUBMIT THIS FROM THE REPO ROOT:  sbatch distill.slurm [run-name]
 set -euo pipefail
@@ -39,13 +39,26 @@ TEACHER_MODEL="$HOME/scratch/distillation/finetuned/${TEACHER_MODEL_ID//\//_}/va
 RUN_NAME="${1:-word_level_$(date +%d_%H_%M_%S)}"
 RUN_NAME="word_level_21_02_13_41"
 
+# python distill.py \
+#    --student-model "$STUDENT_MODEL" \
+#    --teacher-model "$TEACHER_MODEL" \
+#    --work-dir "$RUN_NAME" \
+#     --approach word_level \
+#    --TRAIN_EPOCHS 10
+
+# python benchmark.py \
+#    --model ~/scratch/distillation/"$RUN_NAME"/word_level_final \
+#    --work-dir ./work_dir/"$RUN_NAME"
+
+
+
+
 python distill.py \
-    --student-model "$STUDENT_MODEL" \
-    --teacher-model "$TEACHER_MODEL" \
-    --work-dir "$RUN_NAME" \
-    --approach word_level \
-    --TRAIN_EPOCHS 10
+    --student-model ~/scratch/distillation/finetuned/Qwen_Qwen2.5-0.5B/vanilla_final \
+    --teacher-model ~/scratch/distillation/finetuned/Qwen_Qwen2.5-3B/vanilla_final \
+    --approach dobi --work-dir test --TRAIN_EPOCHS 10
+
 
 python benchmark.py \
-    --model ~/scratch/distillation/"$RUN_NAME"/word_level_final \
-    --work-dir ./work_dir/"$RUN_NAME"
+    --model ~/scratch/distillation/test/checkpoint-2200 \
+    --work-dir ./work_dir/test

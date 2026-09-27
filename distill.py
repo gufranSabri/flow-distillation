@@ -8,6 +8,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from utils.logger import Logger, log_config, log_model, log_dataset_sizes
 from utils.utils import set_rng_state, parse_cli_overrides, find_latest_checkpoint
 from utils.data import build_dolly_datasets
+from utils.teacher_cache import is_cached, build_cache
 
 from src.distill import get_approach
 
@@ -24,27 +25,31 @@ def check_same_vocab(args, tokenizer, teacher_tokenizer):
         )
 
 
-def prep_model_comps(args, approach):
-    args.logger("Loading tokenizers …")
-    tokenizer = AutoTokenizer.from_pretrained(args.teacher_model, trust_remote_code=True)
+def prep_model_comps(args, approach, tokenizer, need_teacher=True):
     student_tokenizer = AutoTokenizer.from_pretrained(args.student_model, trust_remote_code=True)
     check_same_vocab(args, student_tokenizer, tokenizer)
 
-    args.logger(f"Loading teacher: {args.teacher_model} …")
-    if hasattr(approach, "load_teacher"):
-        # an approach that needs more than the teacher's output distribution loads it
-        # its own way instead of as a plain HF model
-        teacher = approach.load_teacher(args, args.teacher_model)
-    else:
-        teacher = AutoModelForCausalLM.from_pretrained(
-            args.teacher_model,
-            dtype=torch.bfloat16,
-            trust_remote_code=True,
-        ).to(args.device)
-        teacher.config.use_cache = False
-        for p in teacher.parameters():
-            p.requires_grad = False
-        teacher.eval()
+    teacher = None
+    if need_teacher:
+        # an approach with USES_TEACHER_CACHE = True skips this entirely once its cache
+        # already exists (distill.py's main) -- the whole point is to never load the
+        # teacher again once it's been cached
+        args.logger(f"Loading teacher: {args.teacher_model} …")
+        if hasattr(approach, "load_teacher"):
+            # an approach that needs more than the teacher's output distribution loads it
+            # its own way instead of as a plain HF model
+            teacher = approach.load_teacher(args, args.teacher_model)
+        else:
+            teacher = AutoModelForCausalLM.from_pretrained(
+                args.teacher_model,
+                dtype=torch.bfloat16,
+                trust_remote_code=True,
+            ).to(args.device)
+            teacher.config.use_cache = False
+            for p in teacher.parameters():
+                p.requires_grad = False
+            teacher.eval()
+        log_model(args.logger, teacher, "teacher")
 
     # resume from the latest checkpoint's weights if one exists, instead of re-initializing
     # from --student-model; Trainer._load_checkpoint_if_exists separately resumes
@@ -57,12 +62,12 @@ def prep_model_comps(args, approach):
     args.logger(f"Loading student ({args.approach}): {student_source} …")
     student = approach.load_model(args, student_source).to(args.device)
 
-    args.logger(f"  Teacher hidden dim {teacher.config.hidden_size} / "
-                f"student hidden dim {student.config.hidden_size}")
-    log_model(args.logger, teacher, "teacher")
+    if teacher is not None:
+        args.logger(f"  Teacher hidden dim {teacher.config.hidden_size} / "
+                    f"student hidden dim {student.config.hidden_size}")
     log_model(args.logger, student, "student")
 
-    return tokenizer, teacher, student
+    return teacher, student
 
 
 def load_config(path):
@@ -81,9 +86,31 @@ def main(args, approach):
     args.logger(f"Work dir: {args.work_dir}", console_print=True)
     log_config(args.logger, args)
 
-    tokenizer, teacher, student = prep_model_comps(args, approach)
+    uses_cache = getattr(approach, "USES_TEACHER_CACHE", False)
+
+    # tokenizing needs only the teacher's tokenizer, not the teacher itself, so datasets
+    # can be built (and the cache checked) before deciding whether the teacher needs to
+    # be loaded at all
+    tokenizer = AutoTokenizer.from_pretrained(args.teacher_model, trust_remote_code=True)
     train_ds, val_ds, collator = build_dolly_datasets(args, tokenizer)
     log_dataset_sizes(args.logger, train_ds, val_ds)
+
+    cache_ready = uses_cache and is_cached(args, args.teacher_model, train_ds, val_ds)
+    teacher, student = prep_model_comps(args, approach, tokenizer, need_teacher=not cache_ready)
+
+    # an approach that trains from cached teacher states (see utils/teacher_cache.py)
+    # opts in with USES_TEACHER_CACHE = True; the cache is (re)built here once, up front,
+    # if missing, and the live teacher is then freed before training starts -- if the
+    # cache was already there, the teacher was never loaded in the first place
+    if uses_cache:
+        if not cache_ready:
+            build_cache(args, teacher, train_ds, val_ds, collator, args.device)
+            args.logger("Freeing teacher (trained from cache from here on) …", console_print=True)
+            del teacher
+            torch.cuda.empty_cache()
+        else:
+            args.logger(f"Teacher cache already present for {args.teacher_model}", console_print=True)
+        teacher = None
 
     trainer = approach.Trainer(
         args, student, teacher, tokenizer, train_ds, val_ds, collator
@@ -104,6 +131,11 @@ Examples
 python distill.py --student-model ~/scratch/distillation/finetuned/Qwen2.5-0.5B/vanilla_final \\
     --teacher-model ~/scratch/distillation/finetuned/Qwen2.5-3B/vanilla_final \\
     --approach word_level --work-dir word_level_run
+
+# DOBI flow distiller, unrolled FM-KT training (frozen student; trains projector + FlowNet)
+python distill.py --student-model ~/scratch/distillation/finetuned/Qwen2.5-0.5B/vanilla_final \\
+    --teacher-model ~/scratch/distillation/finetuned/Qwen2.5-3B/vanilla_final \\
+    --approach dobi --work-dir dobi_run
 """,
     )
     parser.add_argument("--student-model", required=True,

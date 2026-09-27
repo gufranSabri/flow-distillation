@@ -190,6 +190,52 @@ model component (not just a loss), put it in `utils/` rather than inside the tri
 own package — `src/<finetune|distill>/<approach>/` should stay the thin
 `model.py`/`trainer.py` glue that wires shared pieces from `utils/` into a training loop.
 
+## The `dobi` distill approach
+
+`--approach dobi` ports DOBI's flow distiller. The flow runs between the two LMs'
+classifier inputs, i.e. the state each `lm_head` consumes (after the final norm). The
+student LM is **frozen**; its classifier input is projected to the teacher's hidden size
+(`x0`), a FlowNet (`utils/flownet.py`, causal self/cross-attention) is Euler-integrated
+for `NUM_FLOW_STEPS` steps toward the teacher's classifier input (`x_N`), and `x_N`/`x0`
+are read out through a frozen copy of the teacher's `lm_head`. Only the projector +
+FlowNet train.
+
+**The student is a floor** (residual, L2D-style):
+`logits = W_S h_S + (readout(x_N) - readout(x0))`, i.e. the frozen student's own logits
+plus the flow's correction, expressed as a displacement in teacher space. `output_proj`
+inside the FlowNet is zero-initialized, so `x_N == x0` at init and the whole model is
+*exactly* the base student -- the flow only has to learn a correction on top, not
+reconstruct the student's behavior from scratch.
+
+Before the main loop, the projector is **warm-started**: a short regression stage fits
+it alone to minimize `||W_T P(h_S) - W_S h_S||^2` on a handful of training batches, so
+`readout(x0)` starts out predicting roughly the base student's own logits instead of an
+arbitrary random projection. Skipped on resume.
+
+Training is FM-KT style, not standard flow matching: there is no interpolant
+`x_t = (1-t) x0 + t x1` fed into the network (that would leak the teacher's state into
+the input). The whole N-step trajectory is unrolled from `x0` exactly as at inference.
+At every step, the raw state the unroll reaches is scored against that same interpolant
+evaluated at the step's own `t` (dense MSE supervision along the whole trajectory, `fm`);
+KD (`kd`) is computed only once, on the logits of whatever the fully-unrolled flow
+actually produces at the end (`x_N`) -- not summed over steps. See
+`configs/distill/dobi.yaml`.
+
+Evaluation reports KL against the teacher (`kl`) and mean ground-truth LM loss
+(`mean_lm_loss`) alongside argmax agreement, not agreement alone.
+
+A dobi checkpoint dir holds the frozen student (plain HF) + tokenizer plus `dobi.pt`
+(flow config + weights, readout included); `benchmark.py` detects it and generates
+through the flow (KV-cached student, FlowNet recomputed over the prefix each token).
+
+**Teacher state caching**: before training starts, dobi runs the teacher once over the
+whole dataset and caches its classifier-input hidden state (not full logits -- those are
+cheaply reconstructed at training time via the frozen readout) to
+`<WORK_DIR_ROOT>/distillation/cache/<teacher>/{train,val}/`. If that cache already
+exists, the pass is skipped and the teacher is never loaded at all. Otherwise it's
+built once, then the live teacher is freed -- it is never resident during training. See
+`utils/teacher_cache.py`.
+
 ## Data pipeline
 
 `utils/data.py`'s `build_dolly_datasets` is shared by `finetune.py`, `distill.py`,

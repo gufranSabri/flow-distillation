@@ -1,7 +1,8 @@
-from . import word_level
+from . import word_level, dobi
 
 APPROACHES = {
     "word_level": word_level,
+    "dobi": dobi,
 }
 
 

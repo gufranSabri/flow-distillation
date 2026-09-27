@@ -1,0 +1,42 @@
+# ── Distillation ───────────────────────────────────────────────────────────────
+# DOBI's flow distiller between the two LMs' classifier inputs -- the state each lm_head
+# consumes, after the final norm: frozen student -> projector -> FlowNet -> frozen copy of
+# the teacher's lm_head. The student is a floor (residual, L2D-style):
+#   logits = W_S h_S + (readout(x_N) - readout(x_0))
+# so at init (output_proj zero-initialized -> x_N == x_0) the model is exactly the base
+# student, and the flow only has to learn the correction on top. Trained FM-KT style: the
+# flow is unrolled for all NUM_FLOW_STEPS steps from the student's own state (no
+# interpolant fed as input -- the teacher is never a network input). Its target at every
+# step is the interpolant (1-t)x0 + t*x1 at that step's own t, scored against the raw
+# unrolled state; KD is only computed once, on the final unrolled state x_N:
+#   loss = W_FLOW * sum_i MSE(x_t_i, (1-t_i) x0 + t_i x1)   [dense, every step]
+#        + W_KL   * DISTILL_LOSS(logits(x_N) || teacher)     [only the final state]
+TEMPERATURE: 1.0
+W_KL: 1.0
+W_FLOW: 1.0
+
+# ── Flow ───────────────────────────────────────────────────────────────────────
+NUM_FLOW_STEPS: 10       # N: unrolled in training, integrated identically at inference
+FLOWNET_D_MODEL: 512
+FLOWNET_LAYERS: 4
+FLOWNET_HEADS: 8
+
+# ── Projector warm-start ─────────────────────────────────────────────────────────
+# before the main loop (skipped on resume): fits the projector alone to minimize
+# ||W_T P(h_S) - W_S h_S||^2 on WARM_START_BATCHES training batches, so readout(x0) starts
+# out predicting roughly the base student's own logits instead of an arbitrary random
+# projection.
+WARM_START_LR: 1.0e-3
+WARM_START_BATCHES: 200
+
+# ── Training ───────────────────────────────────────────────────────────────────
+# only the projector + FlowNet train; the student LM and the teacher readout are frozen
+LR: 3.0e-4
+WARMUP_RATIO: 0.03
+WEIGHT_DECAY: 0.01
+MAX_GRAD_NORM: 1.0
+
+LOG_EVERY: 10
+EVAL_EVERY: 200
+SAVE_EVERY: 200
+SAVE_TOTAL_LIMIT: 1

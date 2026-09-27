@@ -257,6 +257,14 @@ def build_dolly_datasets(args, tokenizer):
         random.shuffle(val_data)
         val_data = val_data[:args.MAX_VAL_SAMPLES]
 
+    # a stable row index into the tokenized dataset, fixed before any DataLoader
+    # shuffling -- utils/teacher_cache.py keys cached teacher states by this index, so
+    # an approach training from the cache can match a shuffled batch back to its
+    # cached rows
+    for data in (train_data, val_data):
+        for i, ex in enumerate(data):
+            ex["idx"] = i
+
     train_tokenized = Dataset.from_list(train_data)
     val_tokenized   = Dataset.from_list(val_data)
 

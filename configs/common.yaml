@@ -11,7 +11,7 @@ MAX_LENGTH: 2048
 
 # ── Distillation loss ──────────────────────────────────────────────────────────
 # Divergence to match teacher/student next-token distributions with: forward_kl | reverse_kl | both
-DISTILL_LOSS: "reverse_kl"
+DISTILL_LOSS: "both"
 
 # ── Training ───────────────────────────────────────────────────────────────────
 TRAIN_EPOCHS: 1
