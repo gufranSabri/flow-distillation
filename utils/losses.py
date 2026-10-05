@@ -28,12 +28,6 @@ def ce_loss(logits, labels, mask):
     return seq_mean(per_token, mask)
 
 
-def hidden_mse(pred, target, mask):
-    """Hidden-state matching: per-token MSE (averaged over the hidden dim) on the masked tokens."""
-    per_token = (pred.float() - target.float()).pow(2).mean(-1)
-    return seq_mean(per_token, mask)
-
-
 def forward_kl(logits, teacher_logits, no_model_batch):
     teacher_probs = F.softmax(teacher_logits, dim=-1, dtype=torch.float32)
     inf_mask = torch.isinf(logits)
